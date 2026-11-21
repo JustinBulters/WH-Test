@@ -579,6 +579,44 @@ def test_leg_times_and_late_groups(client):
     assert "Te laat" not in client.get("/").get_data(as_text=True)
 
 
+def test_late_group_alerts_admins_once(client):
+    from datetime import datetime, timedelta, timezone
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("INSERT INTO users (username, password_hash, role) VALUES ('admin2', 'x', 'admin')")
+        left = (datetime.now(timezone.utc) - timedelta(minutes=100)).isoformat(timespec="seconds")
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (1, 2, ?, ?)",
+                   (left, left))
+        db.commit()
+    t = login(client, "admin")
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_2": "60"})
+    # Any poll (here by staff) notices the late group and alerts every admin, not staff.
+    login(client, "post3")
+    assert client.get("/meldingen/nieuw?na=0").get_json()["items"] == []
+    login(client, "admin")
+    d = client.get("/meldingen/nieuw?na=0").get_json()
+    assert len(d["items"]) == 1 and "Groep 101 is te laat" in d["items"][0]["text"]
+    assert "van CP 2 naar CP 3 (verwacht 60 min)" in d["items"][0]["text"]
+    # Opening the alert goes to /g/1, which sends an admin on to the group page.
+    link = client.get(d["items"][0]["url"]).headers["Location"]
+    assert link.endswith("/g/1")
+    assert client.get(link).headers["Location"].endswith("/groepen/1")
+    # More polls do not send the same alert again.
+    client.get("/meldingen/nieuw?na=0")
+    with wh.app.app_context():
+        db = wh.get_db()
+        texts = [r[0] for r in db.execute("SELECT u.username FROM notifications n JOIN users u ON u.id = n.user_id")]
+        assert sorted(texts) == ["admin", "admin2"]
+    # Wiping all group data also clears the alerts.
+    make_super()
+    t = login(client, "admin")
+    client.post("/instellingen", data={"csrf": t, "op": "wipe", "confirm": "WISSEN"})
+    with wh.app.app_context():
+        db = wh.get_db()
+        assert db.execute("SELECT COUNT(*) FROM late_alerts").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 0
+
+
 def test_offline_tap_time_and_json(client):
     from datetime import datetime, timedelta, timezone
     t = login(client, "post3")

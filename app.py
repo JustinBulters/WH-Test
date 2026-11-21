@@ -185,6 +185,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- Which "group is late" alerts were already sent: one per group per leg (per check-out).
+CREATE TABLE IF NOT EXISTS late_alerts (
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    checkpoint INTEGER NOT NULL,  -- the checkpoint the group left
+    since TEXT NOT NULL,          -- its check-out time there
+    at TEXT NOT NULL,
+    PRIMARY KEY (group_id, checkpoint, since)
+);
 """
 
 
@@ -681,6 +689,28 @@ def late_groups(db):
     return sorted(late, key=lambda x: x["walking"] - x["expected"], reverse=True)
 
 
+def send_late_alerts(db):
+    """Notify all admins once when a group becomes late on a leg.
+
+    Runs on every notification poll, so it needs no background job: as long as
+    anyone has the site open, new late groups are noticed within ~15 seconds.
+    """
+    late = late_groups(db)
+    if not late:
+        return
+    admins = [r["id"] for r in db.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1")]
+    for x in late:
+        # INSERT OR IGNORE only adds a row the first time, so each alert goes out once,
+        # even when two phones poll at the same moment.
+        cur = db.execute("INSERT OR IGNORE INTO late_alerts (group_id, checkpoint, since, at) VALUES (?, ?, ?, ?)",
+                         (x["id"], x["from"], x["since"], now_utc()))
+        if cur.rowcount:
+            notify(db, admins, f"Groep {x['name']} is te laat: al {x['walking']} min onderweg van "
+                               f"{cp_label(x['from'])} naar {cp_label(x['to'])} (verwacht {x['expected']} min)",
+                   url_for("group_link", gid=x["id"]))
+    db.commit()
+
+
 @app.route("/")
 @login_required()
 def index():
@@ -868,6 +898,7 @@ def notifications_poll():
     after = request.args.get("na", "0")
     after = int(after) if after.isdigit() else 0
     db = get_db()
+    send_late_alerts(db)
     uid = current_user()["id"]
     rows = db.execute("SELECT id, text FROM notifications WHERE user_id = ? AND read_at IS NULL AND id > ? "
                       "ORDER BY id LIMIT 5", (uid, after)).fetchall()
@@ -1411,9 +1442,9 @@ def settings():
             else:
                 counts = {t: db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                           for t in ("groups", "hikers", "checkins", "scores")}
-                for table in ("score_requests", "scores", "checkins", "hikers", "groups"):
+                for table in ("late_alerts", "score_requests", "scores", "checkins", "hikers", "groups"):
                     db.execute(f"DELETE FROM {table}")
-                db.execute("DELETE FROM notifications WHERE link LIKE '/verzoeken%'")
+                db.execute("DELETE FROM notifications WHERE link LIKE '/verzoeken%' OR link LIKE '/g/%'")
                 db.commit()
                 audit("alle groepsdata gewist: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
                 flash(f"Alle groepsdata is gewist ({counts['groups']} groepen, {counts['hikers']} wandelaars). "
