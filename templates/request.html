@@ -1,0 +1,36 @@
+{% extends "base.html" %}{% block title %}Verzoek groep {{ req.group_name }}{% endblock %}
+{% block content %}
+{% set r = req %}
+<p><a href="{{ url_for('score_requests') }}">← Verzoeken</a></p>
+<h1>Scorewijziging groep {{ req.group_name }} <small>· CP {{ req.checkpoint }} · {{ req.category|capitalize }}</small></h1>
+<div class="panel">
+  <p>{% include "_request_status.html" %} <span class="muted">aangevraagd door <b>{{ req.requester }}</b> op {{ req.requested_at|localtime }}</span></p>
+  <div class="wrap flat"><table>
+    <tr><th></th><th>Was</th><th>Wordt</th></tr>
+    <tr><td><b>Quiz</b></td><td>{{ req.old_quiz or '–' }}</td><td><b>{{ req.quiz or '–' }}</b></td></tr>
+    <tr><td><b>Praktijk</b></td><td>{{ req.old_practical or '–' }}</td><td><b>{{ req.practical or '–' }}</b></td></tr>
+  </table></div>
+  <h3>Reden</h3>
+  <p class="note">{{ req.reason }}</p>
+  {% if req.status == 'open' and current and (current.quiz != req.old_quiz or current.practical != req.old_practical) %}
+  <p class="flash error">Let op: de score is sinds het verzoek al veranderd (nu quiz {{ current.quiz or '–' }}, praktijk {{ current.practical or '–' }}).</p>
+  {% endif %}
+  {% if req.status != 'open' %}
+  <p class="muted">{{ 'Goedgekeurd' if req.status == 'approved' else 'Afgewezen' }} door {{ req.decider or '–' }} op {{ req.decided_at|localtime }}.</p>
+  {% if req.decision_note %}<p>Toelichting: {{ req.decision_note }}</p>{% endif %}
+  {% endif %}
+</div>
+{% if me.role == 'admin' and req.status == 'open' %}
+<fieldset>
+  <legend>Beslissen</legend>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="row"><label style="flex:1 1 100%">Toelichting voor de post (optioneel)<input name="note" maxlength="500"></label></div>
+    <div class="actions">
+      <button class="big" name="decision" value="approved">Goedkeuren</button>
+      <button class="big danger" name="decision" value="declined">Afwijzen</button>
+    </div>
+  </form>
+</fieldset>
+{% endif %}
+{% endblock %}

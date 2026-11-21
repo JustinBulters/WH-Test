@@ -318,3 +318,66 @@ def test_old_database_gets_phone_column(tmp_path):
     with wh.app.app_context():
         wh.init_db()
         assert wh.get_db().execute("SELECT phone FROM groups").fetchone()[0] == ""
+
+
+def scores_of(gid, cp):
+    with wh.app.app_context():
+        r = wh.get_db().execute("SELECT quiz, practical FROM scores WHERE group_id = ? AND checkpoint = ?",
+                                (gid, cp)).fetchone()
+        return tuple(r) if r else None
+
+
+def test_staff_scores_are_write_once_and_change_needs_approval(client):
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "7"})
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "9", "practical_3": "5"})
+    assert scores_of(1, 3) == (7, 5)  # quiz kept, empty practical filled in
+    # A change request needs a reason.
+    r = client.post("/checkpoint/3/groep/1/wijziging", data={"csrf": t, "quiz_3": "8", "practical_3": "5"},
+                    follow_redirects=True)
+    assert "Vul een reden in" in r.get_data(as_text=True)
+    client.post("/checkpoint/3/groep/1/wijziging",
+                data={"csrf": t, "quiz_3": "8", "practical_3": "5", "reason": "verkeerd getikt"})
+    assert scores_of(1, 3) == (7, 5)
+    page = client.get("/checkpoint/3/groep/1").get_data(as_text=True)
+    assert "wijzigingsverzoek</a> open" in page
+    # Admin gets a notification that links to the request.
+    t = login(client, "admin")
+    assert 'class="badge">1<' in client.get("/").get_data(as_text=True)
+    page = client.get("/meldingen").get_data(as_text=True)
+    nid = re.search(r'/meldingen/(\d+)', page).group(1)
+    r = client.get(f"/meldingen/{nid}")
+    assert r.headers["Location"].endswith("/verzoeken/1")
+    page = client.get("/verzoeken/1").get_data(as_text=True)
+    assert "verkeerd getikt" in page and "Goedkeuren" in page
+    assert 'class="badge"' not in page
+    client.post("/verzoeken/1", data={"csrf": t, "decision": "approved", "note": "ok"})
+    assert scores_of(1, 3) == (8, 5)
+    # Deciding twice does nothing.
+    client.post("/verzoeken/1", data={"csrf": t, "decision": "declined"})
+    assert scores_of(1, 3) == (8, 5)
+    # The staff member is told.
+    login(client, "post3")
+    page = client.get("/meldingen").get_data(as_text=True)
+    assert "is goedgekeurd" in page
+    assert "goedgekeurd" in client.get("/verzoeken/1").get_data(as_text=True)
+
+
+def test_declined_request_and_access(client):
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "7", "practical_3": "6"})
+    client.post("/checkpoint/3/groep/1/wijziging",
+                data={"csrf": t, "quiz_3": "10", "practical_3": "6", "reason": "graag"})
+    # Only one open request at a time.
+    r = client.post("/checkpoint/3/groep/1/wijziging",
+                    data={"csrf": t, "quiz_3": "9", "practical_3": "6", "reason": "nog een"}, follow_redirects=True)
+    assert "al een wijzigingsverzoek open" in r.get_data(as_text=True)
+    assert client.post("/verzoeken/1", data={"csrf": t, "decision": "approved"}).status_code == 403
+    login(client, "kijk")
+    assert client.get("/verzoeken/1").status_code == 403
+    t = login(client, "admin")
+    client.post("/verzoeken/1", data={"csrf": t, "decision": "declined", "note": "nee"})
+    assert scores_of(1, 3) == (7, 6)
+    # Admins still change scores directly.
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "4", "practical_3": "6"})
+    assert scores_of(1, 3) == (4, 6)
