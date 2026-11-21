@@ -650,3 +650,23 @@ def test_notification_poll(client):
     # Polling is not written to the audit log.
     with wh.app.app_context():
         assert wh.get_db().execute("SELECT COUNT(*) FROM audit_log WHERE path LIKE '/meldingen/nieuw%'").fetchone()[0] == 0
+
+
+def test_map_visibility_per_user(client):
+    t = login(client, "admin")
+    # A plain admin cannot change who sees the map.
+    client.post("/gebruikers", data={"csrf": t, "op": "update", "user_id": "3", "role": "viewer", "active": "1"})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT can_map FROM users WHERE id = 3").fetchone()[0] == 1
+    make_super()
+    t = login(client, "admin")
+    client.post("/gebruikers", data={"csrf": t, "op": "update", "user_id": "3", "role": "viewer", "active": "1"})
+    login(client, "kijk")
+    assert ">Kaart<" not in client.get("/").get_data(as_text=True)
+    assert client.get("/kaart").status_code == 403
+    t = login(client, "admin")
+    assert ">Kaart<" in client.get("/").get_data(as_text=True)
+    client.post("/gebruikers", data={"csrf": t, "op": "update", "user_id": "3", "role": "viewer",
+                                     "active": "1", "can_map": "1"})
+    login(client, "kijk")
+    assert client.get("/kaart").status_code == 200

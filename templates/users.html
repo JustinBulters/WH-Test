@@ -16,6 +16,7 @@
   {{ role_fields(u) }}
   <label>Nieuw wachtwoord<input name="password" type="password" autocomplete="new-password" placeholder="ongewijzigd"></label>
   <label>Actief<input type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}></label>
+  {% if me.is_super %}<label>Kaart zien<input type="checkbox" name="can_map" value="1" {% if u.can_map or u.is_super %}checked{% endif %} {% if u.is_super %}disabled title="Een superbeheerder ziet de kaart altijd"{% endif %}></label>{% else %}<label>Kaart zien<b style="padding:.45rem 0">{{ 'ja' if u.can_map or u.is_super else 'nee' }}</b></label>{% endif %}
   <button>Opslaan</button>
 </form></fieldset>
 {% endif %}
