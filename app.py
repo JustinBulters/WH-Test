@@ -7,7 +7,7 @@ import os
 import secrets
 import sqlite3
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from zoneinfo import ZoneInfo
 
@@ -323,7 +323,7 @@ def csrf_protect():
 
 @app.after_request
 def write_audit(response):
-    if request.endpoint == "static":
+    if request.endpoint in ("static", "service_worker"):
         return response
     user = current_user()  # cached in g, so still known right after logout
     action = g.get("audit_action")
@@ -861,46 +861,89 @@ def notifications_read():
 @app.route("/checkpoint/<int:cp>/groep/<int:gid>/<action>", methods=["POST"])
 @login_required("admin", "staff")
 def checkpoint_stamp(cp, gid, action):
+    """Check a group in or out, or (admin) clear it.
+
+    The offline script sends `at` (the moment the button was tapped) and `ajax=1`;
+    it then gets JSON back. A repeated tap that was already stored counts as done.
+    """
     check_cp(cp, edit=True)
     db = get_db()
     group = db.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
     if group is None:
         abort(404)
+    ajax = bool(request.form.get("ajax"))
     visit = db.execute("SELECT * FROM checkins WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
     uid, ts = current_user()["id"], now_utc()
+    tapped = tap_time(request.form.get("at", ""))
+    late_note = ""
+    if tapped and tapped < ts:
+        late_note = f" (offline getikt om {localtime(tapped, '%H:%M')}, later verstuurd)"
+        ts = tapped
+
+    def done(ok, msg, already=False):
+        if ajax:
+            return jsonify(ok=ok, already=already, message=msg), (200 if ok else 409)
+        flash(msg, "ok" if ok else "error")
+        return redirect(safe_back(url_for("checkpoint", cp=cp)))
+
     if action in ("in", "uit") and not hike_started():
-        flash(f"De hike begint op {dutch_date(start_date())}. Inchecken kan vanaf die dag.", "error")
-        return redirect(safe_back(url_for("checkpoint", cp=cp)))
+        return done(False, f"De hike begint op {dutch_date(start_date())}. Inchecken kan vanaf die dag.")
     if group["retired_at"] and action in ("in", "uit"):
-        flash(f"Groep {group['name']} is uitgevallen.", "error")
-        return redirect(safe_back(url_for("checkpoint", cp=cp)))
+        return done(False, f"Groep {group['name']} is uitgevallen.")
     if action == "in":
         if visit and visit["checkin_at"]:
-            flash("Deze groep is hier al ingecheckt.", "error")
-        else:
-            db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkin_by) "
-                       "VALUES (?, ?, ?, ?)", (gid, cp, ts, uid))
-            audit(f"groep {group['name']} ingecheckt op CP{cp}")
-            flash(f"Groep {group['name']} ingecheckt om {localtime(ts, '%H:%M')}.", "ok")
+            return done(ajax, "Deze groep is hier al ingecheckt.", already=True)
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkin_by) "
+                   "VALUES (?, ?, ?, ?)", (gid, cp, ts, uid))
+        audit(f"groep {group['name']} ingecheckt op CP{cp}" + late_note)
+        msg = f"Groep {group['name']} ingecheckt om {localtime(ts, '%H:%M')}."
     elif action == "uit":
         if not visit or not visit["checkin_at"]:
-            flash("Groep moet eerst inchecken.", "error")
-        elif visit["checkout_at"]:
-            flash("Deze groep is hier al uitgecheckt.", "error")
-        else:
-            db.execute("UPDATE checkins SET checkout_at = ?, checkout_by = ? WHERE id = ?",
-                       (ts, uid, visit["id"]))
-            audit(f"groep {group['name']} uitgecheckt op CP{cp}")
-            flash(f"Groep {group['name']} uitgecheckt om {localtime(ts, '%H:%M')}.", "ok")
+            return done(False, "Groep moet eerst inchecken.")
+        if visit["checkout_at"]:
+            return done(ajax, "Deze groep is hier al uitgecheckt.", already=True)
+        if ts < visit["checkin_at"]:
+            ts = visit["checkin_at"]
+        db.execute("UPDATE checkins SET checkout_at = ?, checkout_by = ? WHERE id = ?",
+                   (ts, uid, visit["id"]))
+        audit(f"groep {group['name']} uitgecheckt op CP{cp}" + late_note)
+        msg = f"Groep {group['name']} uitgecheckt om {localtime(ts, '%H:%M')}."
     elif action == "herstel" and current_user()["role"] == "admin":
         db.execute("DELETE FROM checkins WHERE group_id = ? AND checkpoint = ?", (gid, cp))
         audit(f"in/uitcheck van groep {group['name']} op CP{cp} gewist")
-        flash("In- en uitcheck gewist.", "ok")
+        msg = "In- en uitcheck gewist."
     else:
         abort(400)
     db.commit()
-    return redirect(safe_back(url_for("checkpoint", cp=cp)))
+    return done(True, msg)
+
+
+# Offline taps older than this are not trusted; the server time is used instead.
+MAX_OFFLINE_HOURS = 12
+
+
+def tap_time(raw):
+    """The time an offline tap happened, as UTC ISO text, if it is believable."""
+    try:
+        t = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if not (now - timedelta(hours=MAX_OFFLINE_HOURS) <= t <= now + timedelta(minutes=2)):
+        return None
+    return min(t, now).astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+@app.route("/sw.js")
+def service_worker():
+    """The service worker must be served from the site root to cover every page."""
+    resp = app.send_static_file("sw.js")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 
 @app.route("/groep/<int:gid>/uitgevallen", methods=["POST"])

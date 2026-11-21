@@ -567,3 +567,25 @@ def test_leg_times_and_late_groups(client):
     assert "te laat" in client.get("/checkpoint/3").get_data(as_text=True)
     client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_1": "75", "leg_2": "90"})
     assert "Te laat" not in client.get("/").get_data(as_text=True)
+
+
+def test_offline_tap_time_and_json(client):
+    from datetime import datetime, timedelta, timezone
+    t = login(client, "post3")
+    tapped = (datetime.now(timezone.utc) - timedelta(minutes=25)).replace(microsecond=0)
+    r = client.post("/checkpoint/3/groep/1/in", data={"csrf": t, "ajax": "1", "at": tapped.isoformat()})
+    assert r.status_code == 200 and r.get_json()["ok"]
+    # Sending the same tap again (e.g. after a lost answer) is fine.
+    r = client.post("/checkpoint/3/groep/1/in", data={"csrf": t, "ajax": "1", "at": tapped.isoformat()})
+    assert r.get_json() == {"ok": True, "already": True, "message": "Deze groep is hier al ingecheckt."}
+    # A time from the far past or the future is not trusted.
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    client.post("/checkpoint/3/groep/1/uit", data={"csrf": t, "ajax": "1", "at": old})
+    with wh.app.app_context():
+        v = wh.get_db().execute("SELECT checkin_at, checkout_at FROM checkins").fetchone()
+    assert v["checkin_at"] == tapped.isoformat()
+    assert datetime.fromisoformat(v["checkout_at"]) > datetime.now(timezone.utc) - timedelta(minutes=1)
+    login(client, "admin")
+    assert "later verstuurd" in client.get("/logboek").get_data(as_text=True)
+    assert client.get("/sw.js").headers["Service-Worker-Allowed"] == "/"
+    assert wh.tap_time("2020-01-01T00:00:00") is None and wh.tap_time("nonsense") is None

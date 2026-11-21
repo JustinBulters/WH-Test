@@ -10,6 +10,7 @@ Website for tracking hikers at checkpoints during a two-day hike. Lightweight on
 - **Quick lookup.** Type a group number at the top of a checkpoint page, the overview or the groups page to jump straight to that group.
 - **Group cards.** Admins can print a card per group with a QR code. Scanning it opens the group: staff land on their own checkpoint's page for that group, others on the group page.
 - **Scoreboard and export.** `/scorebord` is a big ranking per category for a screen, refreshed every 30 seconds. Admins can download everything (ranking, groups, times and scores) as an Excel file from the results page.
+- **Offline check-in.** Without signal, Inchecken/Uitchecken taps are kept on the phone and sent automatically when there is a connection again, with the time of the tap (at most 12 hours old). Checkpoint pages opened before stay available offline. Keeping pages offline needs HTTPS (or localhost); the waiting-taps queue works on any page that stays open.
 - **Check-in and check-out** per group per checkpoint, stamped with the server time when the button is pressed. Times are stored in UTC and shown in Dutch time (Europe/Amsterdam).
 - **Scores.** Each group gets a quiz score and a practical score from 1 to 10 at each checkpoint. The results page ranks groups per category.
 - **Roles.**

@@ -178,3 +178,4 @@ fieldset.danger-zone legend{color:var(--red)}
 .panel.late{border-color:var(--red);background:var(--red-soft)}
 .panel.late h2{margin:0 0 .25rem;color:var(--red)}
 .panel.late ul.people li{border-color:rgba(194,65,59,.2)}
+.flash.offline{background:var(--amber);color:var(--amber-ink)}
