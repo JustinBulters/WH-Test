@@ -82,13 +82,13 @@ CREATE TABLE IF NOT EXISTS checkins (
 );
 CREATE TABLE IF NOT EXISTS scores (
     id INTEGER PRIMARY KEY,
-    hiker_id INTEGER NOT NULL REFERENCES hikers(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     checkpoint INTEGER NOT NULL,
     quiz INTEGER CHECK (quiz BETWEEN 1 AND 10),
     practical INTEGER CHECK (practical BETWEEN 1 AND 10),
     updated_at TEXT NOT NULL,
     updated_by INTEGER REFERENCES users(id),
-    UNIQUE (hiker_id, checkpoint)
+    UNIQUE (group_id, checkpoint)
 );
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY,
@@ -154,13 +154,6 @@ def localtime(value, fmt="%d-%m %H:%M"):
     if not value:
         return ""
     return datetime.fromisoformat(value).astimezone(LOCAL_TZ).strftime(fmt)
-
-
-def category_for_number(number):
-    for cat, (lo, hi) in CATEGORIES.items():
-        if lo <= number <= hi:
-            return cat
-    return None
 
 
 def current_user():
@@ -338,35 +331,31 @@ def checkpoint_group(cp, gid):
     group = db.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
     if group is None:
         abort(404)
-    hikers = db.execute(
-        "SELECT h.*, s.quiz, s.practical FROM hikers h "
-        "LEFT JOIN scores s ON s.hiker_id = h.id AND s.checkpoint = ? "
-        "WHERE h.group_id = ? ORDER BY h.number", (cp, gid)).fetchall()
+    hikers = db.execute("SELECT * FROM hikers WHERE group_id = ? ORDER BY number",
+                        (gid,)).fetchall()
+    score = db.execute("SELECT * FROM scores WHERE group_id = ? AND checkpoint = ?",
+                       (gid, cp)).fetchone()
 
     if request.method == "POST":
         check_cp(cp, edit=True)
-        changed = []
-        for h in hikers:
-            vals = []
-            for field in ("quiz", "practical"):
-                raw = request.form.get(f"{field}_{h['id']}", "")
-                vals.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None)
-            if vals != [h["quiz"], h["practical"]]:
-                db.execute(
-                    "INSERT INTO scores (hiker_id, checkpoint, quiz, practical, updated_at, updated_by) "
-                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (hiker_id, checkpoint) DO UPDATE SET "
-                    "quiz = excluded.quiz, practical = excluded.practical, "
-                    "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-                    (h["id"], cp, vals[0], vals[1], now_utc(), current_user()["id"]))
-                changed.append(f"#{h['number']} quiz={vals[0]} praktijk={vals[1]}")
+        vals = []
+        for field in ("quiz", "practical"):
+            raw = request.form.get(field, "")
+            vals.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None)
+        db.execute(
+            "INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (group_id, checkpoint) DO UPDATE SET "
+            "quiz = excluded.quiz, practical = excluded.practical, "
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (gid, cp, vals[0], vals[1], now_utc(), current_user()["id"]))
         db.commit()
-        audit(f"scores CP{cp} groep {group['name']}: " + ("; ".join(changed) or "geen wijziging"))
+        audit(f"scores CP{cp} groep {group['name']}: quiz={vals[0]} praktijk={vals[1]}")
         flash("Scores opgeslagen.", "ok")
         return redirect(url_for("checkpoint_group", cp=cp, gid=gid))
 
     visit = db.execute("SELECT * FROM checkins WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
-    return render_template("group_scores.html", cp=cp, group=group, hikers=hikers,
+    return render_template("group_scores.html", cp=cp, group=group, hikers=hikers, score=score,
                            visit=visit, can_edit=can_edit_checkpoint(cp))
 
 
@@ -414,17 +403,14 @@ def checkpoint_stamp(cp, gid, action):
 def results():
     db = get_db()
     rows = db.execute(
-        "SELECT h.number, h.name, g.name AS group_name, "
+        "SELECT g.id, g.name, g.category, "
+        "(SELECT GROUP_CONCAT(h.number || ' ' || h.name, ', ') FROM "
+        " (SELECT * FROM hikers WHERE group_id = g.id ORDER BY number) h) AS members, "
         "COALESCE(SUM(s.quiz), 0) AS quiz, COALESCE(SUM(s.practical), 0) AS practical, "
-        "COUNT(s.id) AS visits FROM hikers h "
-        "LEFT JOIN groups g ON g.id = h.group_id LEFT JOIN scores s ON s.hiker_id = h.id "
-        "GROUP BY h.id ORDER BY (COALESCE(SUM(s.quiz), 0) + COALESCE(SUM(s.practical), 0)) DESC, h.number"
+        "COUNT(s.id) AS visits FROM groups g LEFT JOIN scores s ON s.group_id = g.id "
+        "GROUP BY g.id ORDER BY (COALESCE(SUM(s.quiz), 0) + COALESCE(SUM(s.practical), 0)) DESC, g.name"
     ).fetchall()
-    by_cat = {cat: [] for cat in CATEGORIES}
-    for r in rows:
-        cat = category_for_number(r["number"])
-        if cat:
-            by_cat[cat].append(r)
+    by_cat = {cat: [r for r in rows if r["category"] == cat] for cat in CATEGORIES}
     return render_template("results.html", by_cat=by_cat)
 
 

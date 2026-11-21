@@ -4,10 +4,10 @@
 {% for cat, rows in by_cat.items() %}
 <h2>{{ cat|capitalize }}</h2>
 <div class="wrap"><table>
-<tr><th>#</th><th>Naam</th><th>Groep</th><th>Quiz</th><th>Praktijk</th><th>Totaal</th><th>CP's</th></tr>
+<tr><th>Groep</th><th>Wandelaars</th><th>Quiz</th><th>Praktijk</th><th>Totaal</th><th>CP's</th></tr>
 {% for r in rows %}
-<tr><td>{{ r.number }}</td><td>{{ r.name }}</td><td>{{ r.group_name or '–' }}</td><td>{{ r.quiz }}</td><td>{{ r.practical }}</td><td><b>{{ r.quiz + r.practical }}</b></td><td>{{ r.visits }}</td></tr>
-{% else %}<tr><td colspan="7" class="muted">Geen wandelaars.</td></tr>{% endfor %}
+<tr><td>{{ r.name }}</td><td class="muted">{{ r.members or '–' }}</td><td>{{ r.quiz }}</td><td>{{ r.practical }}</td><td><b>{{ r.quiz + r.practical }}</b></td><td>{{ r.visits }}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">Geen groepen.</td></tr>{% endfor %}
 </table></div>
 {% endfor %}
 {% endblock %}

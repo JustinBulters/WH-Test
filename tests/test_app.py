@@ -54,13 +54,13 @@ def test_staff_checkin_scores_and_limits(client):
     client.post("/checkpoint/3/groep/1/uit", data={"csrf": t})
     client.post("/checkpoint/3/groep/1/in", data={"csrf": t})
     client.post("/checkpoint/3/groep/1/uit", data={"csrf": t})
-    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_1": "8", "practical_1": "11", "quiz_2": "5"})
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz": "8", "practical": "11"})
     with wh.app.app_context():
         db = wh.get_db()
         v = db.execute("SELECT * FROM checkins").fetchone()
         assert v["checkin_at"] and v["checkout_at"] and v["checkpoint"] == 3
-        s = {r["hiker_id"]: (r["quiz"], r["practical"]) for r in db.execute("SELECT * FROM scores")}
-        assert s == {1: (8, None), 2: (5, None)}
+        s = [(r["group_id"], r["checkpoint"], r["quiz"], r["practical"]) for r in db.execute("SELECT * FROM scores")]
+        assert s == [(1, 3, 8, None)]
         actions = [r["action"] for r in db.execute("SELECT action FROM audit_log WHERE username='post3'")]
         assert "groep De Bevers ingecheckt op CP3" in actions
         assert "toegang geweigerd" in actions
@@ -68,10 +68,11 @@ def test_staff_checkin_scores_and_limits(client):
 
 def test_viewer_read_only(client):
     t = login(client, "kijk")
-    assert client.get("/uitslag").status_code == 200
+    page = client.get("/uitslag").get_data(as_text=True)
+    assert "De Bevers" in page and "101 Anna, 102 Bram" in page
     assert client.get("/checkpoint/5").status_code == 200
     assert client.post("/checkpoint/5/groep/1/in", data={"csrf": t}).status_code == 403
-    assert client.post("/checkpoint/5/groep/1", data={"csrf": t, "quiz_1": "3"}).status_code == 403
+    assert client.post("/checkpoint/5/groep/1", data={"csrf": t, "quiz": "3"}).status_code == 403
     assert client.get("/gebruikers").status_code == 403
 
 
