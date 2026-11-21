@@ -8,9 +8,12 @@ services:
     pull_policy: always                     # building the project always fetches the newest version
     restart: unless-stopped
     ports:
-      - "8080:8000"                         # NAS port 8080 -> site. Change 8080 if it is taken.
+      - "9999:8000"                         # NAS port 9999 -> site
     environment:
-      WH_ADMIN_PASSWORD: "kies-een-wachtwoord"   # only used the very first time
+      # Read from a .env file next to this file on the NAS (never commit it):
+      #   WH_ADMIN_PASSWORD=your-password
+      # Only used the very first time, to create the admin account.
+      WH_ADMIN_PASSWORD: ${WH_ADMIN_PASSWORD:-}
       # WH_HTTPS: "1"                       # turn on once you only open the site via https://
     volumes:
       - data:/data                          # database and session key, kept across updates

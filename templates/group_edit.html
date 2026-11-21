@@ -1,13 +1,20 @@
-{% extends "base.html" %}{% block title %}{{ group.name }}{% endblock %}
+{% extends "base.html" %}{% block title %}Groep {{ group.name }}{% endblock %}
 {% block content %}
 <p><a href="{{ url_for('groups') }}">← Groepen</a></p>
-<h1>{{ group.name }} <small>· {{ group.category|capitalize }} ({{ CATEGORIES[group.category][0] }}–{{ CATEGORIES[group.category][1] }})</small></h1>
+<h1>Groep {{ group.name }} <small>· {{ group.category|capitalize }}</small></h1>
+{% set back = url_for('group_edit', gid=group.id) %}
+{% include "_retired.html" %}
+{% if not group.retired_at %}
+<form method="post" action="{{ url_for('group_retire', gid=group.id) }}" class="actions" style="margin:0 0 1rem">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+  <button class="stop">Uitgevallen</button>
+</form>
+{% endif %}
 
 {% for h in hikers %}
 <fieldset>
 <form method="post" class="row">
   <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="hiker_save"><input type="hidden" name="hiker_id" value="{{ h.id }}">
-  <label>Nummer<input name="number" type="number" inputmode="numeric" value="{{ h.number }}" style="width:6rem" required></label>
   <label>Naam<input name="name" value="{{ h.name }}" required></label>
   <label style="flex:1 1 14rem">Opmerking (bv. allergie)<input name="comment" value="{{ h.comment }}"></label>
   <button>Opslaan</button>
@@ -20,17 +27,12 @@
 <fieldset>
 <form method="post" class="row">
   <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="hiker_save">
-  <label>Nummer<input name="number" type="number" inputmode="numeric" min="{{ CATEGORIES[group.category][0] }}" max="{{ CATEGORIES[group.category][1] }}" style="width:6rem" required></label>
   <label>Naam<input name="name" required></label>
   <label style="flex:1 1 14rem">Opmerking (bv. allergie)<input name="comment"></label>
   <button>Toevoegen</button>
 </form>
 </fieldset>
 
-<h2>Groep</h2>
-<form method="post" class="row">
-  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="group_rename">
-  <label>Naam<input name="name" value="{{ group.name }}" required></label><button>Hernoemen</button>
-</form>
-<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="group_delete"><button class="danger">Groep met wandelaars verwijderen</button></form>
+<h2>Groep verwijderen</h2>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="group_delete"><button class="danger">Groep {{ group.name }} met wandelaars verwijderen</button></form>
 {% endblock %}

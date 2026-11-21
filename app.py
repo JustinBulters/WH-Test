@@ -18,7 +18,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_TZ = ZoneInfo("Europe/Amsterdam")
 
-# Hiker categories and their number ranges.
+# Hiker categories and their group number ranges.
 CATEGORIES = {
     "junioren": (101, 199),
     "senioren": (201, 299),
@@ -64,12 +64,13 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    category TEXT NOT NULL CHECK (category IN ('junioren', 'senioren', 'veteranen'))
+    name TEXT NOT NULL UNIQUE,  -- the group number, e.g. '101'; assigned automatically
+    category TEXT NOT NULL CHECK (category IN ('junioren', 'senioren', 'veteranen')),
+    retired_at TEXT,            -- set when the group dropped out ("uitgevallen")
+    retired_cp INTEGER
 );
 CREATE TABLE IF NOT EXISTS hikers (
     id INTEGER PRIMARY KEY,
-    number INTEGER NOT NULL UNIQUE,
     name TEXT NOT NULL,
     comment TEXT NOT NULL DEFAULT '',
     group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL
@@ -130,7 +131,46 @@ def init_db():
     cols = {r["name"] for r in db.execute("PRAGMA table_info(users)")}
     if "theme" not in cols:
         db.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'auto'")
+    gcols = {r["name"] for r in db.execute("PRAGMA table_info(groups)")}
+    if "retired_at" not in gcols:
+        db.execute("ALTER TABLE groups ADD COLUMN retired_at TEXT")
+        db.execute("ALTER TABLE groups ADD COLUMN retired_cp INTEGER")
+    # Hikers no longer have their own number: the group has it.
+    if "number" in {r["name"] for r in db.execute("PRAGMA table_info(hikers)")}:
+        db.commit()
+        db.execute("PRAGMA foreign_keys = OFF")
+        db.executescript("""
+            BEGIN;
+            CREATE TABLE hikers_new (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                comment TEXT NOT NULL DEFAULT '',
+                group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL);
+            INSERT INTO hikers_new (id, name, comment, group_id)
+                SELECT id, name, comment, group_id FROM hikers;
+            DROP TABLE hikers;
+            ALTER TABLE hikers_new RENAME TO hikers;
+            COMMIT;""")
+        db.execute("PRAGMA foreign_keys = ON")
+    # Groups with an old free-text name get the next number in their category.
+    for g in db.execute("SELECT id, category FROM groups WHERE name GLOB '*[^0-9]*' OR name = '' "
+                        "ORDER BY id").fetchall():
+        db.execute("UPDATE groups SET name = ? WHERE id = ?",
+                   (str(next_group_number(db, g["category"])), g["id"]))
     db.commit()
+
+
+def next_group_number(db, category):
+    """The next free group number in a category: one above the highest, else the first gap."""
+    lo, hi = CATEGORIES[category]
+    used = {int(r[0]) for r in db.execute(
+        "SELECT name FROM groups WHERE category = ?", (category,)) if r[0].isdigit()}
+    if not used:
+        return lo
+    if max(used) < hi:
+        return max(used) + 1
+    free = [n for n in range(lo, hi + 1) if n not in used]
+    return free[0] if free else None
 
 
 @app.cli.command("init-db")
@@ -230,6 +270,12 @@ def login_required(*roles):
             return view(*args, **kwargs)
         return wrapped
     return decorator
+
+
+def safe_back(default):
+    """Only follow a local 'back' link from a form."""
+    back = request.form.get("back", "")
+    return back if back.startswith("/") and not back.startswith("//") else default
 
 
 def can_view_checkpoint(cp):
@@ -335,13 +381,14 @@ def index():
         stats[row["checkpoint"]] = {"in": row["present"], "out": row["done"]}
     # Where is each group now: its most recent check-in or check-out.
     where = db.execute(
-        "SELECT g.id, g.name, g.category, c.checkpoint, c.checkin_at, c.checkout_at, "
-        "(SELECT GROUP_CONCAT(h.number, ', ') FROM hikers h WHERE h.group_id = g.id) AS numbers "
+        "SELECT g.id, g.name, g.category, g.retired_at, g.retired_cp, "
+        "c.checkpoint, c.checkin_at, c.checkout_at, "
+        "(SELECT GROUP_CONCAT(h.name, ', ') FROM hikers h WHERE h.group_id = g.id) AS members "
         "FROM groups g LEFT JOIN ("
         "  SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id "
         "    ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC) AS rn FROM checkins"
         ") c ON c.group_id = g.id AND c.rn = 1 "
-        "ORDER BY g.category, g.name").fetchall()
+        "ORDER BY g.category, CAST(g.name AS INTEGER)").fetchall()
     return render_template("index.html", stats=stats, total=total, where=where)
 
 
@@ -353,9 +400,9 @@ def checkpoint(cp):
     groups = db.execute(
         "SELECT g.*, c.checkin_at, c.checkout_at, "
         "(SELECT COUNT(*) FROM hikers h WHERE h.group_id = g.id) AS size, "
-        "(SELECT GROUP_CONCAT(h.number, ', ') FROM hikers h WHERE h.group_id = g.id) AS numbers "
+        "(SELECT GROUP_CONCAT(h.name, ', ') FROM hikers h WHERE h.group_id = g.id) AS members "
         "FROM groups g LEFT JOIN checkins c ON c.group_id = g.id AND c.checkpoint = ? "
-        "ORDER BY g.category, g.name", (cp,)).fetchall()
+        "ORDER BY g.category, CAST(g.name AS INTEGER)", (cp,)).fetchall()
     return render_template("checkpoint.html", cp=cp, groups=groups,
                            can_edit=can_edit_checkpoint(cp))
 
@@ -368,7 +415,7 @@ def checkpoint_group(cp, gid):
     group = db.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
     if group is None:
         abort(404)
-    hikers = db.execute("SELECT * FROM hikers WHERE group_id = ? ORDER BY number",
+    hikers = db.execute("SELECT * FROM hikers WHERE group_id = ? ORDER BY id",
                         (gid,)).fetchall()
     score = db.execute("SELECT * FROM scores WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
@@ -407,6 +454,9 @@ def checkpoint_stamp(cp, gid, action):
     visit = db.execute("SELECT * FROM checkins WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
     uid, ts = current_user()["id"], now_utc()
+    if group["retired_at"] and action in ("in", "uit"):
+        flash(f"Groep {group['name']} is uitgevallen.", "error")
+        return redirect(safe_back(url_for("checkpoint", cp=cp)))
     if action == "in":
         if visit and visit["checkin_at"]:
             flash("Deze groep is hier al ingecheckt.", "error")
@@ -414,7 +464,7 @@ def checkpoint_stamp(cp, gid, action):
             db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkin_by) "
                        "VALUES (?, ?, ?, ?)", (gid, cp, ts, uid))
             audit(f"groep {group['name']} ingecheckt op CP{cp}")
-            flash(f"{group['name']} ingecheckt om {localtime(ts, '%H:%M')}.", "ok")
+            flash(f"Groep {group['name']} ingecheckt om {localtime(ts, '%H:%M')}.", "ok")
     elif action == "uit":
         if not visit or not visit["checkin_at"]:
             flash("Groep moet eerst inchecken.", "error")
@@ -424,7 +474,7 @@ def checkpoint_stamp(cp, gid, action):
             db.execute("UPDATE checkins SET checkout_at = ?, checkout_by = ? WHERE id = ?",
                        (ts, uid, visit["id"]))
             audit(f"groep {group['name']} uitgecheckt op CP{cp}")
-            flash(f"{group['name']} uitgecheckt om {localtime(ts, '%H:%M')}.", "ok")
+            flash(f"Groep {group['name']} uitgecheckt om {localtime(ts, '%H:%M')}.", "ok")
     elif action == "herstel" and current_user()["role"] == "admin":
         db.execute("DELETE FROM checkins WHERE group_id = ? AND checkpoint = ?", (gid, cp))
         audit(f"in/uitcheck van groep {group['name']} op CP{cp} gewist")
@@ -432,7 +482,34 @@ def checkpoint_stamp(cp, gid, action):
     else:
         abort(400)
     db.commit()
-    return redirect(request.form.get("back") or url_for("checkpoint", cp=cp))
+    return redirect(safe_back(url_for("checkpoint", cp=cp)))
+
+
+@app.route("/groep/<int:gid>/uitgevallen", methods=["POST"])
+@login_required("admin", "staff")
+def group_retire(gid):
+    """Mark a group as dropped out, or (admin only) undo that."""
+    user = current_user()
+    db = get_db()
+    group = db.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
+    if group is None:
+        abort(404)
+    raw = request.form.get("cp", "")
+    cp = int(raw) if raw.isdigit() and int(raw) in CHECKPOINTS else None
+    if user["role"] == "staff" and (cp is None or cp != user["checkpoint"]):
+        abort(403)
+    if request.form.get("undo"):
+        if user["role"] != "admin":
+            abort(403)
+        db.execute("UPDATE groups SET retired_at = NULL, retired_cp = NULL WHERE id = ?", (gid,))
+        audit(f"groep {group['name']} weer actief gemaakt")
+        flash(f"Groep {group['name']} doet weer mee.", "ok")
+    elif not group["retired_at"]:
+        db.execute("UPDATE groups SET retired_at = ?, retired_cp = ? WHERE id = ?", (now_utc(), cp, gid))
+        audit(f"groep {group['name']} uitgevallen" + (f" bij CP{cp}" if cp else ""))
+        flash(f"Groep {group['name']} staat nu als uitgevallen.", "ok")
+    db.commit()
+    return redirect(safe_back(url_for("index")))
 
 
 @app.route("/uitslag")
@@ -440,12 +517,11 @@ def checkpoint_stamp(cp, gid, action):
 def results():
     db = get_db()
     rows = db.execute(
-        "SELECT g.id, g.name, g.category, "
-        "(SELECT GROUP_CONCAT(h.number || ' ' || h.name, ', ') FROM "
-        " (SELECT * FROM hikers WHERE group_id = g.id ORDER BY number) h) AS members, "
+        "SELECT g.id, g.name, g.category, g.retired_at, "
+        "(SELECT GROUP_CONCAT(h.name, ', ') FROM hikers h WHERE h.group_id = g.id) AS members, "
         "COALESCE(SUM(s.quiz), 0) AS quiz, COALESCE(SUM(s.practical), 0) AS practical, "
         "COUNT(s.id) AS visits FROM groups g LEFT JOIN scores s ON s.group_id = g.id "
-        "GROUP BY g.id ORDER BY (COALESCE(SUM(s.quiz), 0) + COALESCE(SUM(s.practical), 0)) DESC, g.name"
+        "GROUP BY g.id ORDER BY (COALESCE(SUM(s.quiz), 0) + COALESCE(SUM(s.practical), 0)) DESC, CAST(g.name AS INTEGER)"
     ).fetchall()
     by_cat = {cat: [r for r in rows if r["category"] == cat] for cat in CATEGORIES}
     return render_template("results.html", by_cat=by_cat)
@@ -460,22 +536,30 @@ def groups():
     if request.method == "POST":
         if current_user()["role"] != "admin":
             abort(403)
-        name = request.form.get("name", "").strip()
         cat = request.form.get("category")
-        if not name or cat not in CATEGORIES:
-            flash("Vul een naam en categorie in.", "error")
+        people = [(n.strip(), c.strip()) for n, c in zip(request.form.getlist("hiker_name"),
+                                                         request.form.getlist("hiker_comment"))]
+        people = [(n, c) for n, c in people if n]
+        if cat not in CATEGORIES:
+            flash("Kies een categorie.", "error")
+        elif not people:
+            flash("Vul minstens één naam in.", "error")
         else:
-            try:
-                db.execute("INSERT INTO groups (name, category) VALUES (?, ?)", (name, cat))
+            number = next_group_number(db, cat)
+            if number is None:
+                lo, hi = CATEGORIES[cat]
+                flash(f"Alle nummers van {lo} tot {hi} zijn al in gebruik.", "error")
+            else:
+                cur = db.execute("INSERT INTO groups (name, category) VALUES (?, ?)", (str(number), cat))
+                db.executemany("INSERT INTO hikers (name, comment, group_id) VALUES (?, ?, ?)",
+                               [(n, c, cur.lastrowid) for n, c in people])
                 db.commit()
-                audit(f"groep {name} ({cat}) aangemaakt")
-                flash("Groep aangemaakt.", "ok")
-            except sqlite3.IntegrityError:
-                flash("Er bestaat al een groep met die naam.", "error")
+                audit(f"groep {number} ({cat}) aangemaakt met {', '.join(n for n, _ in people)}")
+                flash(f"Groep {number} aangemaakt.", "ok")
         return redirect(url_for("groups"))
-    groups = db.execute("SELECT * FROM groups ORDER BY category, name").fetchall()
+    groups = db.execute("SELECT * FROM groups ORDER BY category, CAST(name AS INTEGER)").fetchall()
     hikers = {}
-    for h in db.execute("SELECT * FROM hikers ORDER BY number"):
+    for h in db.execute("SELECT * FROM hikers ORDER BY id"):
         hikers.setdefault(h["group_id"], []).append(h)
     return render_template("groups.html", groups=groups, hikers=hikers)
 
@@ -494,44 +578,28 @@ def group_edit(gid):
             hid = form.get("hiker_id")
             name = form.get("name", "").strip()
             comment = form.get("comment", "").strip()
-            raw = form.get("number", "")
-            number = int(raw) if raw.isdigit() else None
-            lo, hi = CATEGORIES[group["category"]]
-            if not name or number is None:
-                flash("Vul nummer en naam in.", "error")
-            elif not lo <= number <= hi:
-                flash(f"Nummer moet tussen {lo} en {hi} liggen voor {group['category']}.", "error")
+            if not name:
+                flash("Vul een naam in.", "error")
+            elif hid:
+                db.execute("UPDATE hikers SET name = ?, comment = ? WHERE id = ? AND group_id = ?",
+                           (name, comment, hid, gid))
+                db.commit()
+                audit(f"wandelaar {name} in groep {group['name']} gewijzigd")
+                flash("Wandelaar opgeslagen.", "ok")
             else:
-                try:
-                    if hid:
-                        db.execute("UPDATE hikers SET number = ?, name = ?, comment = ? "
-                                   "WHERE id = ? AND group_id = ?", (number, name, comment, hid, gid))
-                        audit(f"wandelaar #{number} gewijzigd")
-                    else:
-                        db.execute("INSERT INTO hikers (number, name, comment, group_id) "
-                                   "VALUES (?, ?, ?, ?)", (number, name, comment, gid))
-                        audit(f"wandelaar #{number} toegevoegd aan groep {group['name']}")
-                    db.commit()
-                    flash("Wandelaar opgeslagen.", "ok")
-                except sqlite3.IntegrityError:
-                    flash(f"Nummer {number} is al in gebruik.", "error")
+                db.execute("INSERT INTO hikers (name, comment, group_id) VALUES (?, ?, ?)",
+                           (name, comment, gid))
+                db.commit()
+                audit(f"wandelaar {name} toegevoegd aan groep {group['name']}")
+                flash("Wandelaar toegevoegd.", "ok")
         elif op == "hiker_delete":
-            h = db.execute("SELECT number FROM hikers WHERE id = ? AND group_id = ?",
+            h = db.execute("SELECT name FROM hikers WHERE id = ? AND group_id = ?",
                            (form.get("hiker_id"), gid)).fetchone()
             if h:
                 db.execute("DELETE FROM hikers WHERE id = ?", (form.get("hiker_id"),))
                 db.commit()
-                audit(f"wandelaar #{h['number']} verwijderd")
+                audit(f"wandelaar {h['name']} uit groep {group['name']} verwijderd")
                 flash("Wandelaar verwijderd.", "ok")
-        elif op == "group_rename":
-            name = form.get("name", "").strip()
-            if name:
-                try:
-                    db.execute("UPDATE groups SET name = ? WHERE id = ?", (name, gid))
-                    db.commit()
-                    audit(f"groep {group['name']} hernoemd naar {name}")
-                except sqlite3.IntegrityError:
-                    flash("Er bestaat al een groep met die naam.", "error")
         elif op == "group_delete":
             db.execute("DELETE FROM hikers WHERE group_id = ?", (gid,))
             db.execute("DELETE FROM groups WHERE id = ?", (gid,))
@@ -540,7 +608,7 @@ def group_edit(gid):
             flash("Groep verwijderd.", "ok")
             return redirect(url_for("groups"))
         return redirect(url_for("group_edit", gid=gid))
-    hikers = db.execute("SELECT * FROM hikers WHERE group_id = ? ORDER BY number", (gid,)).fetchall()
+    hikers = db.execute("SELECT * FROM hikers WHERE group_id = ? ORDER BY id", (gid,)).fetchall()
     return render_template("group_edit.html", group=group, hikers=hikers)
 
 

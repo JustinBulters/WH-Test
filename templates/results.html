@@ -6,7 +6,7 @@
 <div class="wrap"><table>
 <tr><th>Groep</th><th>Wandelaars</th><th>Quiz</th><th>Praktijk</th><th>Totaal</th><th>CP's</th></tr>
 {% for r in rows %}
-<tr><td>{{ r.name }}</td><td class="muted">{{ r.members or '–' }}</td><td>{{ r.quiz }}</td><td>{{ r.practical }}</td><td><b>{{ r.quiz + r.practical }}</b></td><td>{{ r.visits }}</td></tr>
+<tr><td><b>{{ r.name }}</b>{% if r.retired_at %} <span class="tag off">uitgevallen</span>{% endif %}</td><td class="muted">{{ r.members or '–' }}</td><td>{{ r.quiz }}</td><td>{{ r.practical }}</td><td><b>{{ r.quiz + r.practical }}</b></td><td>{{ r.visits }}</td></tr>
 {% else %}<tr><td colspan="6" class="muted">Geen groepen.</td></tr>{% endfor %}
 </table></div>
 {% endfor %}

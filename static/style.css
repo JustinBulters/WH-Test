@@ -96,3 +96,5 @@ ul.people li:last-child{border-bottom:0}
 .login .panel{padding:1.5rem}
 .login input{width:100%}
 .login .row label{width:100%}
+button.stop{background:var(--red);border-color:var(--red);color:#fff}
+.tag.off{background:var(--red-soft);color:var(--red)}
