@@ -35,6 +35,7 @@
       <a href="{{ url_for('score_requests') }}" {% if ep in ('score_requests', 'score_request') %}class="on"{% endif %}>Verzoeken</a>
     {% endif %}
     {% if me.role == 'admin' %}
+      <a href="{{ url_for('checkpoint_setup') }}" {% if ep == 'checkpoint_setup' %}class="on"{% endif %}>Checkpoints</a>
       <a href="{{ url_for('users') }}" {% if ep == 'users' %}class="on"{% endif %}>Gebruikers</a>
       <a href="{{ url_for('audit_log') }}" {% if ep == 'audit_log' %}class="on"{% endif %}>Logboek</a>
       {% if me.is_super %}<a href="{{ url_for('settings') }}" {% if ep == 'settings' %}class="on"{% endif %}>Instellingen</a>{% endif %}

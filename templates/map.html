@@ -28,13 +28,14 @@
   }).addTo(map);
   var markers = {}, lines = {1: L.polyline([], {color: '#2e6b45', weight: 3, opacity: .6, dashArray: '6 6'}).addTo(map),
                              2: L.polyline([], {color: '#7a5a00', weight: 3, opacity: .6, dashArray: '6 6'}).addTo(map)};
+  function esc(t) { var d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
   function state(p) { return p.in > 0 ? 'here' : (p.todo === 0 && p.out > 0 ? 'done' : ''); }
   function icon(p) {
     return L.divIcon({className: '', iconSize: [40, 40], iconAnchor: [20, 20], popupAnchor: [0, -18],
                       html: '<span class="pin big ' + state(p) + '">' + p.cp + '</span>'});
   }
   function popup(p) {
-    var h = '<b>CP ' + p.cp + '</b> · dag ' + p.day + '<br>' + p.todo + ' verwacht · ' + p.in + ' aanwezig · ' + p.out + ' vertrokken';
+    var h = '<b>' + esc(p.label) + '</b> · dag ' + p.day + '<br>' + p.todo + ' verwacht · ' + p.in + ' aanwezig · ' + p.out + ' vertrokken';
     if (p.url) h += '<br><a href="' + p.url + '">Open checkpoint</a>';
     if (admin) h += '<br><button type="button" class="danger small" data-remove="' + p.cp + '">Van kaart halen</button>';
     return h;
@@ -55,7 +56,7 @@
   }
   function place(p) {
     if (markers[p.cp]) { markers[p.cp].setLatLng([p.lat, p.lng]); return; }
-    var m = L.marker([p.lat, p.lng], {icon: icon(p), draggable: admin, title: 'CP ' + p.cp}).addTo(map).bindPopup(popup(p));
+    var m = L.marker([p.lat, p.lng], {icon: icon(p), draggable: admin, title: p.label}).addTo(map).bindPopup(popup(p));
     m.on('dragend', function () { var ll = m.getLatLng(); p.lat = ll.lat; p.lng = ll.lng; redrawLines(); save(p); });
     markers[p.cp] = m;
   }

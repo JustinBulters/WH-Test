@@ -1,6 +1,6 @@
 {% extends "base.html" %}{% block title %}CP {{ cp }}{% endblock %}
 {% block content %}
-<h1>Checkpoint {{ cp }} <small>· dag {{ CHECKPOINTS[cp] }}</small></h1>
+<h1>Checkpoint {{ cp }}{% if cp_names().get(cp) %} · {{ cp_names()[cp] }}{% endif %} <small>· dag {{ CHECKPOINTS[cp] }}</small></h1>
 {% set action = url_for('checkpoint', cp=cp) %}{% include "_lookup.html" %}
 <div class="wrap"><table>
 <tr><th>Groep</th><th>Wandelaars</th><th>Status</th><th></th></tr>
