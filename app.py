@@ -14,7 +14,7 @@ import io
 
 import click
 import segno
-from flask import (Flask, abort, flash, g, redirect, render_template, request,
+from flask import (Flask, abort, flash, g, jsonify, redirect, render_template, request,
                    send_file, session, url_for)
 from markupsafe import Markup
 from openpyxl import Workbook
@@ -139,6 +139,11 @@ CREATE TABLE IF NOT EXISTS notifications (
     read_at TEXT
 );
 CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at);
+CREATE TABLE IF NOT EXISTS checkpoint_locations (
+    checkpoint INTEGER PRIMARY KEY,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -533,16 +538,8 @@ def save_group_scores(db, group, cps, write_once=False):
 
 # ---------------------------------------------------------------- overview
 
-@app.route("/")
-@login_required()
-def index():
-    user = current_user()
-    if user["role"] == "staff":
-        if user["checkpoint"]:
-            return redirect(url_for("checkpoint", cp=user["checkpoint"]))
-        return render_template("message.html", text="Je bent nog niet aan een checkpoint gekoppeld.")
-    db = get_db()
-    total = db.execute("SELECT COUNT(*) FROM groups").fetchone()[0]
+def checkpoint_stats(db):
+    """Per checkpoint: groups present (in), left (out) and still expected (todo); plus active groups."""
     stats = {cp: {"in": 0, "out": 0} for cp in CHECKPOINTS}
     for row in db.execute(
             "SELECT checkpoint, SUM(checkin_at IS NOT NULL AND checkout_at IS NULL) AS present, "
@@ -555,7 +552,20 @@ def index():
         "LEFT JOIN checkins c ON c.group_id = g.id GROUP BY g.id HAVING g.retired_at IS NULL")}
     for cp in CHECKPOINTS:
         stats[cp]["todo"] = sum(1 for f in furthest.values() if f is None or f < cp)
-    active = len(furthest)
+    return stats, len(furthest)
+
+
+@app.route("/")
+@login_required()
+def index():
+    user = current_user()
+    if user["role"] == "staff":
+        if user["checkpoint"]:
+            return redirect(url_for("checkpoint", cp=user["checkpoint"]))
+        return render_template("message.html", text="Je bent nog niet aan een checkpoint gekoppeld.")
+    db = get_db()
+    total = db.execute("SELECT COUNT(*) FROM groups").fetchone()[0]
+    stats, active = checkpoint_stats(db)
     # Where is each group now: its most recent check-in or check-out.
     where = db.execute(
         "SELECT g.id, g.name, g.category, g.retired_at, g.retired_cp, "
@@ -1064,6 +1074,45 @@ def group_edit(gid):
 
 
 # ------------------------------------------------------------------- users
+
+@app.route("/kaart", methods=["GET", "POST"])
+@login_required()
+def map_view():
+    """OpenStreetMap with the checkpoints. Admins place a checkpoint by clicking or dragging."""
+    db = get_db()
+    if request.method == "POST":
+        if current_user()["role"] != "admin":
+            abort(403)
+        raw = request.form.get("cp", "")
+        cp = int(raw) if raw.isdigit() and int(raw) in CHECKPOINTS else None
+        if cp is None:
+            abort(400)
+        if request.form.get("op") == "remove":
+            db.execute("DELETE FROM checkpoint_locations WHERE checkpoint = ?", (cp,))
+            audit(f"CP{cp} van de kaart gehaald")
+        else:
+            try:
+                lat, lng = float(request.form["lat"]), float(request.form["lng"])
+            except (KeyError, ValueError):
+                abort(400)
+            if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+                abort(400)
+            db.execute("INSERT INTO checkpoint_locations (checkpoint, lat, lng) VALUES (?, ?, ?) "
+                       "ON CONFLICT (checkpoint) DO UPDATE SET lat = excluded.lat, lng = excluded.lng",
+                       (cp, round(lat, 6), round(lng, 6)))
+            audit(f"CP{cp} op de kaart gezet op {lat:.5f}, {lng:.5f}")
+        db.commit()
+        if request.form.get("ajax"):
+            return jsonify(ok=True)
+        return redirect(url_for("map_view"))
+    stats, _ = checkpoint_stats(db)
+    locs = {r["checkpoint"]: r for r in db.execute("SELECT * FROM checkpoint_locations")}
+    points = [{"cp": cp, "day": day, "lat": locs[cp]["lat"] if cp in locs else None,
+               "lng": locs[cp]["lng"] if cp in locs else None, **stats[cp],
+               "url": url_for("checkpoint", cp=cp) if can_view_checkpoint(cp) else None}
+              for cp, day in CHECKPOINTS.items()]
+    return render_template("map.html", points=points)
+
 
 @app.route("/instellingen", methods=["GET", "POST"])
 @login_required("admin", "superadmin")

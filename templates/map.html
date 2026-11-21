@@ -1,0 +1,90 @@
+{% extends "base.html" %}{% block title %}Kaart{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='leaflet/leaflet.css') }}">{% endblock %}
+{% block content %}
+<h1>Kaart</h1>
+{% set admin = me.role == 'admin' %}
+{% if admin %}
+<div class="panel map-tools">
+  <label>Plaats<select id="place">{% for p in points %}<option value="{{ p.cp }}">CP {{ p.cp }}{% if p.lat is none %} (nog niet op kaart){% endif %}</option>{% endfor %}</select></label>
+  <span class="muted">Tik op de kaart om dit checkpoint daar te zetten. Sleep een punt om het te verplaatsen.</span>
+</div>
+{% endif %}
+<div id="map" class="map" role="application" aria-label="Kaart met checkpoints"></div>
+<div class="tl-legend" style="margin-top:.6rem">
+  <span><i class="pin"></i> nog groepen verwacht</span>
+  <span><i class="pin here"></i> groepen aanwezig</span>
+  <span><i class="pin done"></i> iedereen is langs geweest</span>
+</div>
+{% if not points|selectattr('lat')|list %}<p class="muted">Er staan nog geen checkpoints op de kaart.{% if not admin %} Een beheerder kan ze plaatsen.{% endif %}</p>{% endif %}
+<noscript><p class="flash error">De kaart werkt alleen met JavaScript aan.</p></noscript>
+<script src="{{ url_for('static', filename='leaflet/leaflet.js') }}"></script>
+<script>
+(function () {
+  var points = {{ points|tojson }}, admin = {{ 'true' if admin else 'false' }};
+  var csrf = {{ csrf|tojson }}, postUrl = {{ url_for('map_view')|tojson }};
+  var map = L.map('map', {zoomControl: true}).setView([52.2, 5.3], 7);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(map);
+  var markers = {}, lines = {1: L.polyline([], {color: '#2e6b45', weight: 3, opacity: .6, dashArray: '6 6'}).addTo(map),
+                             2: L.polyline([], {color: '#7a5a00', weight: 3, opacity: .6, dashArray: '6 6'}).addTo(map)};
+  function state(p) { return p.in > 0 ? 'here' : (p.todo === 0 && p.out > 0 ? 'done' : ''); }
+  function icon(p) {
+    return L.divIcon({className: '', iconSize: [40, 40], iconAnchor: [20, 20], popupAnchor: [0, -18],
+                      html: '<span class="pin big ' + state(p) + '">' + p.cp + '</span>'});
+  }
+  function popup(p) {
+    var h = '<b>CP ' + p.cp + '</b> · dag ' + p.day + '<br>' + p.todo + ' verwacht · ' + p.in + ' aanwezig · ' + p.out + ' vertrokken';
+    if (p.url) h += '<br><a href="' + p.url + '">Open checkpoint</a>';
+    if (admin) h += '<br><button type="button" class="danger small" data-remove="' + p.cp + '">Van kaart halen</button>';
+    return h;
+  }
+  function redrawLines() {
+    [1, 2].forEach(function (d) {
+      lines[d].setLatLngs(points.filter(function (p) { return p.day === d && p.lat !== null; })
+                                .map(function (p) { return [p.lat, p.lng]; }));
+    });
+  }
+  function save(p, remove) {
+    var f = new FormData();
+    f.append('csrf', csrf); f.append('cp', p.cp); f.append('ajax', '1');
+    if (remove) f.append('op', 'remove'); else { f.append('lat', p.lat); f.append('lng', p.lng); }
+    fetch(postUrl, {method: 'POST', body: f, credentials: 'same-origin'}).then(function (r) {
+      if (!r.ok) alert('Opslaan is niet gelukt. Probeer het opnieuw.');
+    }).catch(function () { alert('Geen verbinding. Het punt is niet opgeslagen.'); });
+  }
+  function place(p) {
+    if (markers[p.cp]) { markers[p.cp].setLatLng([p.lat, p.lng]); return; }
+    var m = L.marker([p.lat, p.lng], {icon: icon(p), draggable: admin, title: 'CP ' + p.cp}).addTo(map).bindPopup(popup(p));
+    m.on('dragend', function () { var ll = m.getLatLng(); p.lat = ll.lat; p.lng = ll.lng; redrawLines(); save(p); });
+    markers[p.cp] = m;
+  }
+  points.forEach(function (p) { if (p.lat !== null) place(p); });
+  redrawLines();
+  var placed = points.filter(function (p) { return p.lat !== null; });
+  if (placed.length) map.fitBounds(L.latLngBounds(placed.map(function (p) { return [p.lat, p.lng]; })).pad(0.2), {maxZoom: 15});
+  if (!admin) return;
+  var select = document.getElementById('place');
+  map.on('click', function (e) {
+    var p = points[select.value - 1];
+    p.lat = e.latlng.lat; p.lng = e.latlng.lng;
+    place(p); redrawLines(); save(p);
+    select.options[select.selectedIndex].text = 'CP ' + p.cp;
+    var next = points.find(function (q) { return q.lat === null; });
+    if (next) select.value = next.cp;
+  });
+  map.on('popupopen', function (e) {
+    var b = e.popup.getElement().querySelector('[data-remove]');
+    if (!b) return;
+    b.addEventListener('click', function () {
+      var p = points[b.getAttribute('data-remove') - 1];
+      map.removeLayer(markers[p.cp]); delete markers[p.cp];
+      p.lat = p.lng = null; redrawLines(); save(p, true);
+      select.options[p.cp - 1].text = 'CP ' + p.cp + ' (nog niet op kaart)';
+    });
+  });
+  var firstFree = points.find(function (p) { return p.lat === null; });
+  if (firstFree) select.value = firstFree.cp;
+})();
+</script>
+{% endblock %}
