@@ -49,7 +49,7 @@
 {% for cat, msg in get_flashed_messages(with_categories=true) %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
 {% block content %}{% endblock %}
 </main>
-{% if me and me.role in ('admin', 'staff') and not bare %}<div id="toasts" aria-live="polite" data-poll="{{ url_for('notifications_poll') }}" data-last="{{ last_note }}"></div>
+{% if me and me.role in ('admin', 'staff') and not bare %}<div id="toasts" aria-live="polite" data-poll="{{ url_for('notifications_poll') }}" data-user="{{ me.id }}"></div>
 <script src="{{ url_for('static', filename='offline.js') }}" defer></script>
 <script src="{{ url_for('static', filename='notify.js') }}" defer></script>{% endif %}
 </body>

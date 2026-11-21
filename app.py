@@ -349,9 +349,7 @@ def inject_globals():
     me = current_user()
     unread = get_db().execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
                               (me["id"],)).fetchone()[0] if me else 0
-    last_note = get_db().execute("SELECT COALESCE(MAX(id), 0) FROM notifications WHERE user_id = ?",
-                                 (me["id"],)).fetchone()[0] if me else 0
-    return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread, "last_note": last_note,
+    return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread,
             "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", ""),
             "role_label": role_label, "can_see_map": can_see_map, "cp_label": cp_label, "cp_names": cp_names, "cp_details": cp_details,
             "day1_last": checkpoints_per_day()[0], "last_cp": max(CHECKPOINTS), "start_date": start_date() if me else None,

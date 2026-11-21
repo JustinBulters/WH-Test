@@ -1,10 +1,15 @@
 /* Shows new notifications as a pop-up without reloading the page.
- * Asks the server every 20 seconds while the page is visible (a few hundred bytes each time).
+ * Asks the server when a page opens and every 15 seconds while the page is visible (a few hundred bytes each time).
  */
 (function () {
   var box = document.getElementById('toasts');
   if (!box || !window.fetch) return;
-  var last = parseInt(box.getAttribute('data-last'), 10) || 0, url = box.getAttribute('data-poll');
+  // Remember (per account, on this device) the newest notification that already popped up,
+  // so unread ones also pop up after a page load, but each one only once.
+  var key = 'wh-toast-last-' + box.getAttribute('data-user'), url = box.getAttribute('data-poll');
+  var last = 0;
+  try { last = parseInt(localStorage.getItem(key), 10) || 0; } catch (e) {}
+  function remember(n) { last = Math.max(last, n); try { localStorage.setItem(key, String(last)); } catch (e) {} }
   var bell = document.querySelector('.bell'), busy = false;
 
   function setBadge(n) {
@@ -36,13 +41,14 @@
       .then(function (d) {
         if (!d) return;
         d.items.forEach(toast);
-        last = Math.max(last, d.last);
+        remember(d.last);
         setBadge(d.unread);
       })
       .catch(function () {})
       .then(function () { busy = false; });
   }
 
-  setInterval(poll, 20000);
+  poll();
+  setInterval(poll, 15000);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
 })();

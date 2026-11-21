@@ -638,7 +638,7 @@ def test_username_not_case_sensitive(client):
 def test_notification_poll(client):
     login(client, "admin")
     page = client.get("/").get_data(as_text=True)
-    assert 'data-last="0"' in page and "notify.js" in page
+    assert 'data-user="1"' in page and "notify.js" in page
     t = login(client, "post3")
     client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "7", "practical_3": "6"})
     client.post("/checkpoint/3/groep/1/wijziging", data={"csrf": t, "quiz_3": "8", "practical_3": "6", "reason": "fout"})
