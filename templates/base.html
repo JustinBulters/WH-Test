@@ -36,12 +36,14 @@
     {% if me.role == 'admin' %}
       <a href="{{ url_for('users') }}" {% if ep == 'users' %}class="on"{% endif %}>Gebruikers</a>
       <a href="{{ url_for('audit_log') }}" {% if ep == 'audit_log' %}class="on"{% endif %}>Logboek</a>
+      {% if me.is_super %}<a href="{{ url_for('settings') }}" {% if ep == 'settings' %}class="on"{% endif %}>Instellingen</a>{% endif %}
     {% endif %}
   </nav>
   {% endif %}
 </header>
 {% endif %}
 <main{% if bare %} class="bare"{% endif %}>
+{% if start_date and not bare and ep in ('index', 'checkpoint') %}{% set days = (start_date - today()).days %}{% if days > 0 %}<div class="flash">De hike begint op <b>{{ start_date|dutch_date }}</b> (nog {{ days }} dag{{ 'en' if days != 1 }}). Inchecken kan vanaf die dag.</div>{% endif %}{% endif %}
 {% for cat, msg in get_flashed_messages(with_categories=true) %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
 {% block content %}{% endblock %}
 </main>

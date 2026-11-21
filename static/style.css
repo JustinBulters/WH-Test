@@ -156,3 +156,5 @@ details.change summary{cursor:pointer;font-weight:600;color:var(--brand)}
 textarea{width:100%}
 .flash a{color:inherit;font-weight:700}
 .flash:not(.ok):not(.error){background:var(--amber);color:var(--amber-ink)}
+fieldset.danger-zone{border-color:var(--red)}
+fieldset.danger-zone legend{color:var(--red)}

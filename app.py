@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS users (
     role TEXT NOT NULL CHECK (role IN ('admin', 'staff', 'viewer')),
     checkpoint INTEGER,
     active INTEGER NOT NULL DEFAULT 1,
-    theme TEXT NOT NULL DEFAULT 'auto'
+    theme TEXT NOT NULL DEFAULT 'auto',
+    is_super INTEGER NOT NULL DEFAULT 0  -- superadmin: an admin who may also change settings
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -138,6 +139,10 @@ CREATE TABLE IF NOT EXISTS notifications (
     read_at TEXT
 );
 CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -163,6 +168,11 @@ def init_db():
     cols = {r["name"] for r in db.execute("PRAGMA table_info(users)")}
     if "theme" not in cols:
         db.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'auto'")
+    if "is_super" not in cols:
+        db.execute("ALTER TABLE users ADD COLUMN is_super INTEGER NOT NULL DEFAULT 0")
+        # The first admin account becomes superadmin.
+        db.execute("UPDATE users SET is_super = 1 WHERE id = "
+                   "(SELECT MIN(id) FROM users WHERE role = 'admin' AND active = 1)")
     gcols = {r["name"] for r in db.execute("PRAGMA table_info(groups)")}
     if "retired_at" not in gcols:
         db.execute("ALTER TABLE groups ADD COLUMN retired_at TEXT")
@@ -218,7 +228,7 @@ def init_db_command(admin):
         return
     # On a hosting service, set WH_ADMIN_PASSWORD so the password is not printed in logs.
     password = os.environ.get("WH_ADMIN_PASSWORD") or secrets.token_urlsafe(9)
-    db.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
+    db.execute("INSERT INTO users (username, password_hash, role, is_super) VALUES (?, ?, 'admin', 1)",
                (admin, generate_password_hash(password)))
     db.commit()
     if os.environ.get("WH_ADMIN_PASSWORD"):
@@ -232,6 +242,15 @@ def init_db_command(admin):
 
 def now_utc():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+MONTHS = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus",
+          "september", "oktober", "november", "december"]
+
+
+@app.template_filter("dutch_date")
+def dutch_date(d):
+    return f"{d.day} {MONTHS[d.month - 1]} {d.year}" if d else ""
 
 
 @app.template_filter("localtime")
@@ -292,7 +311,9 @@ def inject_globals():
     unread = get_db().execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
                               (me["id"],)).fetchone()[0] if me else 0
     return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread,
-            "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", "")}
+            "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", ""),
+            "role_label": role_label, "start_date": start_date() if me else None,
+            "today": lambda: datetime.now(LOCAL_TZ).date()}
 
 
 def notify(db, user_ids, text, link):
@@ -300,7 +321,39 @@ def notify(db, user_ids, text, link):
                    [(uid, now_utc(), text, link) for uid in user_ids])
 
 
+def role_label(user):
+    return "Superbeheerder" if user["is_super"] else ROLES[user["role"]]
+
+
+def get_setting(key, default=None):
+    row = get_db().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_setting(db, key, value):
+    if value is None:
+        db.execute("DELETE FROM settings WHERE key = ?", (key,))
+    else:
+        db.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
+                   "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+
+
+def start_date():
+    """The first day of the hike as a date, or None when not set."""
+    raw = get_setting("start_date")
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date() if raw else None
+    except ValueError:
+        return None
+
+
+def hike_started():
+    sd = start_date()
+    return sd is None or datetime.now(LOCAL_TZ).date() >= sd
+
+
 def login_required(*roles):
+    """Only logged-in users with one of these roles. "superadmin" means an admin with is_super."""
     def decorator(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
@@ -308,6 +361,8 @@ def login_required(*roles):
             if user is None:
                 return redirect(url_for("login", next=request.path))
             if roles and user["role"] not in roles:
+                abort(403)
+            if "superadmin" in roles and not user["is_super"]:
                 abort(403)
             return view(*args, **kwargs)
         return wrapped
@@ -704,6 +759,9 @@ def checkpoint_stamp(cp, gid, action):
     visit = db.execute("SELECT * FROM checkins WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
     uid, ts = current_user()["id"], now_utc()
+    if action in ("in", "uit") and not hike_started():
+        flash(f"De hike begint op {dutch_date(start_date())}. Inchecken kan vanaf die dag.", "error")
+        return redirect(safe_back(url_for("checkpoint", cp=cp)))
     if group["retired_at"] and action in ("in", "uit"):
         flash(f"Groep {group['name']} is uitgevallen.", "error")
         return redirect(safe_back(url_for("checkpoint", cp=cp)))
@@ -1007,6 +1065,43 @@ def group_edit(gid):
 
 # ------------------------------------------------------------------- users
 
+@app.route("/instellingen", methods=["GET", "POST"])
+@login_required("admin", "superadmin")
+def settings():
+    """Superadmin only: start date of the hike and wiping all group data."""
+    db = get_db()
+    if request.method == "POST":
+        op = request.form.get("op")
+        if op == "start_date":
+            raw = request.form.get("start_date", "").strip()
+            try:
+                value = datetime.strptime(raw, "%Y-%m-%d").date().isoformat() if raw else None
+            except ValueError:
+                flash("Ongeldige datum.", "error")
+                return redirect(url_for("settings"))
+            set_setting(db, "start_date", value)
+            db.commit()
+            audit(f"startdatum gezet op {value or 'geen'}")
+            flash("Startdatum opgeslagen." if value else "Startdatum verwijderd.", "ok")
+        elif op == "wipe":
+            if request.form.get("confirm", "").strip().upper() != "WISSEN":
+                flash("Typ WISSEN om te bevestigen. Er is niets gewist.", "error")
+            else:
+                counts = {t: db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                          for t in ("groups", "hikers", "checkins", "scores")}
+                for table in ("score_requests", "scores", "checkins", "hikers", "groups"):
+                    db.execute(f"DELETE FROM {table}")
+                db.execute("DELETE FROM notifications WHERE link LIKE '/verzoeken%'")
+                db.commit()
+                audit("alle groepsdata gewist: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+                flash(f"Alle groepsdata is gewist ({counts['groups']} groepen, {counts['hikers']} wandelaars). "
+                      "Accounts en instellingen zijn bewaard.", "ok")
+        return redirect(url_for("settings"))
+    counts = {t: db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+              for t in ("groups", "hikers", "checkins", "scores")}
+    return render_template("settings.html", counts=counts, start=start_date())
+
+
 @app.route("/gebruikers", methods=["GET", "POST"])
 @login_required("admin")
 def users():
@@ -1015,6 +1110,12 @@ def users():
         form = request.form
         op = form.get("op")
         role = form.get("role")
+        me = current_user()
+        make_super = role == "superadmin"
+        if make_super:
+            if not me["is_super"]:
+                abort(403)
+            role = "admin"
         cp = form.get("checkpoint", "")
         cp = int(cp) if cp.isdigit() and int(cp) in CHECKPOINTS else None
         if role == "staff" and cp is None:
@@ -1026,11 +1127,12 @@ def users():
                 flash("Vul gebruikersnaam, rol en een wachtwoord van minstens 8 tekens in.", "error")
             else:
                 try:
-                    db.execute("INSERT INTO users (username, password_hash, role, checkpoint) "
-                               "VALUES (?, ?, ?, ?)", (username, generate_password_hash(password),
-                                                       role, cp if role == "staff" else None))
+                    db.execute("INSERT INTO users (username, password_hash, role, checkpoint, is_super) "
+                               "VALUES (?, ?, ?, ?, ?)", (username, generate_password_hash(password),
+                                                          role, cp if role == "staff" else None,
+                                                          int(make_super)))
                     db.commit()
-                    audit(f"gebruiker {username} aangemaakt als {role}")
+                    audit(f"gebruiker {username} aangemaakt als {'superadmin' if make_super else role}")
                     flash("Gebruiker aangemaakt.", "ok")
                 except sqlite3.IntegrityError:
                     flash("Die gebruikersnaam bestaat al.", "error")
@@ -1039,11 +1141,13 @@ def users():
             target = db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
             if target and role in ROLES:
                 active = 1 if form.get("active") else 0
-                if uid == current_user()["id"] and (role != "admin" or not active):
+                if target["is_super"] and not me["is_super"]:
+                    abort(403)
+                if uid == me["id"] and (role != "admin" or not active or make_super != bool(me["is_super"])):
                     flash("Je kunt je eigen beheerdersrechten niet afnemen.", "error")
                 else:
-                    db.execute("UPDATE users SET role = ?, checkpoint = ?, active = ? WHERE id = ?",
-                               (role, cp if role == "staff" else None, active, uid))
+                    db.execute("UPDATE users SET role = ?, checkpoint = ?, active = ?, is_super = ? WHERE id = ?",
+                               (role, cp if role == "staff" else None, active, int(make_super), uid))
                     if form.get("password"):
                         if len(form["password"]) < 8:
                             flash("Wachtwoord moet minstens 8 tekens hebben.", "error")
@@ -1051,7 +1155,7 @@ def users():
                             db.execute("UPDATE users SET password_hash = ? WHERE id = ?",
                                        (generate_password_hash(form["password"]), uid))
                     db.commit()
-                    audit(f"gebruiker {target['username']} gewijzigd: rol={role} cp={cp} actief={active}"
+                    audit(f"gebruiker {target['username']} gewijzigd: rol={'superadmin' if make_super else role} cp={cp} actief={active}"
                           + (" + nieuw wachtwoord" if form.get("password") else ""))
                     flash("Gebruiker bijgewerkt.", "ok")
         return redirect(url_for("users"))

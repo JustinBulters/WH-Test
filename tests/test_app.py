@@ -381,3 +381,93 @@ def test_declined_request_and_access(client):
     # Admins still change scores directly.
     client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "4", "practical_3": "6"})
     assert scores_of(1, 3) == (4, 6)
+
+
+def make_super(name="admin"):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("UPDATE users SET is_super = 1 WHERE username = ?", (name,))
+        db.commit()
+
+
+def test_settings_superadmin_only(client):
+    login(client, "admin")
+    assert client.get("/instellingen").status_code == 403
+    make_super()
+    login(client, "admin")
+    page = client.get("/instellingen").get_data(as_text=True)
+    assert "Startdatum" in page and "Superbeheerder" in client.get("/profiel").get_data(as_text=True)
+
+
+def test_start_date_blocks_checkin_before(client):
+    from datetime import datetime, timedelta
+    make_super()
+    t = login(client, "admin")
+    tomorrow = (datetime.now(wh.LOCAL_TZ).date() + timedelta(days=1)).isoformat()
+    client.post("/instellingen", data={"csrf": t, "op": "start_date", "start_date": tomorrow})
+    assert "nog 1 dag)" in client.get("/").get_data(as_text=True)
+    t = login(client, "post3")
+    r = client.post("/checkpoint/3/groep/1/in", data={"csrf": t}, follow_redirects=True)
+    assert "Inchecken kan vanaf die dag" in r.get_data(as_text=True)
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM checkins").fetchone()[0] == 0
+    t = login(client, "admin")
+    today = datetime.now(wh.LOCAL_TZ).date().isoformat()
+    client.post("/instellingen", data={"csrf": t, "op": "start_date", "start_date": today})
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1/in", data={"csrf": t})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM checkins").fetchone()[0] == 1
+
+
+def test_wipe_all_group_data(client):
+    make_super()
+    t = login(client, "admin")
+    client.post("/checkpoint/3/groep/1/in", data={"csrf": t})
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "5"})
+    client.post("/instellingen", data={"csrf": t, "op": "wipe", "confirm": "nee"})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 1
+    r = client.post("/instellingen", data={"csrf": t, "op": "wipe", "confirm": "WISSEN"}, follow_redirects=True)
+    assert "Alle groepsdata is gewist" in r.get_data(as_text=True)
+    with wh.app.app_context():
+        db = wh.get_db()
+        for table in ("groups", "hikers", "checkins", "scores"):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3
+    # A plain admin cannot wipe.
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("UPDATE users SET is_super = 0")
+        db.commit()
+    t = login(client, "admin")
+    assert client.post("/instellingen", data={"csrf": t, "op": "wipe", "confirm": "WISSEN"}).status_code == 403
+
+
+def test_only_superadmin_grants_superadmin(client):
+    t = login(client, "admin")
+    assert client.post("/gebruikers", data={"csrf": t, "op": "update", "user_id": "3",
+                                            "role": "superadmin", "active": "1"}).status_code == 403
+    make_super()
+    t = login(client, "admin")
+    client.post("/gebruikers", data={"csrf": t, "op": "update", "user_id": "3", "role": "superadmin", "active": "1"})
+    with wh.app.app_context():
+        u = wh.get_db().execute("SELECT role, is_super FROM users WHERE id = 3").fetchone()
+        assert tuple(u) == ("admin", 1)
+
+
+def test_first_admin_becomes_superadmin_on_upgrade(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, "
+                "role TEXT NOT NULL, checkpoint INTEGER, active INTEGER NOT NULL DEFAULT 1, theme TEXT NOT NULL DEFAULT 'auto')")
+    con.execute("INSERT INTO users (username, password_hash, role) VALUES ('post', 'x', 'staff'), "
+                "('admin', 'x', 'admin'), ('admin2', 'x', 'admin')")
+    con.commit()
+    con.close()
+    wh.app.config.update(DATABASE=str(path))
+    with wh.app.app_context():
+        wh.init_db()
+        rows = wh.get_db().execute("SELECT username, is_super FROM users ORDER BY id").fetchall()
+        assert [tuple(r) for r in rows] == [("post", 0), ("admin", 1), ("admin2", 0)]
