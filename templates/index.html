@@ -1,4 +1,5 @@
 {% extends "base.html" %}{% block title %}Overzicht{% endblock %}
+{% from "_macros.html" import status %}
 {% block content %}
 <h1>Overzicht</h1>
 <h2>Waar is elke groep nu?</h2>
@@ -6,13 +7,10 @@
 <tr><th>Groep</th><th>Wandelaars</th><th>Laatst gezien</th></tr>
 {% for g in where %}
 <tr>
-  <td>{{ g.name }}<br><span class="muted">{{ g.category|capitalize }}</span></td>
+  <td><a href="{{ url_for('group_edit', gid=g.id) }}">{{ g.name }}</a><br><span class="muted">{{ g.category|capitalize }}</span></td>
   <td>{{ g.members or '–' }}</td>
   <td>
-    {% if g.retired_at %}<span class="tag off">uitgevallen{% if g.retired_cp %} bij CP {{ g.retired_cp }}{% endif %}</span><br><span class="muted">{{ g.retired_at|localtime }}</span>
-    {% elif g.checkout_at %}<span class="tag out">onderweg na CP {{ g.checkpoint }}</span><br><span class="muted">vertrokken {{ g.checkout_at|localtime }}</span>
-    {% elif g.checkin_at %}<span class="tag in">op CP {{ g.checkpoint }}</span><br><span class="muted">aangekomen {{ g.checkin_at|localtime }}</span>
-    {% else %}<span class="tag">nog niet gestart</span>{% endif %}
+    {{ status(g) }}
   </td>
 </tr>
 {% else %}<tr><td colspan="3" class="muted">Nog geen groepen.</td></tr>{% endfor %}

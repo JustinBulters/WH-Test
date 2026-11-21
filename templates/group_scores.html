@@ -6,6 +6,8 @@
 {% set back = url_for('checkpoint_group', cp=cp, gid=group.id) %}
 {% include "_retired.html" %}
 
+{% include "_timeline.html" %}
+
 <fieldset>
   <legend>In- en uitchecken</legend>
   <div class="stamp">
@@ -41,7 +43,7 @@
 <form method="post" class="row">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% for field, label in (('quiz', 'Quiz'), ('practical', 'Praktijk')) %}
-  <label>{{ label }}<select name="{{ field }}"><option value="">–</option>{% for i in range(1, 11) %}<option {% if score and score[field] == i %}selected{% endif %}>{{ i }}</option>{% endfor %}</select></label>
+  <label>{{ label }}<select name="{{ field }}_{{ cp }}"><option value="">–</option>{% for i in range(1, 11) %}<option {% if score and score[field] == i %}selected{% endif %}>{{ i }}</option>{% endfor %}</select></label>
   {% endfor %}
   <button class="big">Scores opslaan</button>
 </form>

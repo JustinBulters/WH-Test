@@ -98,3 +98,19 @@ ul.people li:last-child{border-bottom:0}
 .login .row label{width:100%}
 button.stop{background:var(--red);border-color:var(--red);color:#fff}
 .tag.off{background:var(--red-soft);color:var(--red)}
+/* Route timeline */
+.tl-day{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:.2rem 0 .45rem}
+.tl{display:flex;align-items:center;margin-bottom:1rem}
+.tl .seg{flex:1;height:4px;min-width:.2rem;background:var(--line);border-radius:2px}
+.tl .seg.on{background:var(--brand)}
+.dot{flex:none;width:clamp(2.15rem,10.5vw,3.1rem);height:clamp(2.15rem,10.5vw,3.1rem);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:clamp(.62rem,2.6vw,.8rem);font-weight:700;letter-spacing:-.02em;background:var(--surface);border:3px solid var(--line);color:var(--muted)}
+.dot.done{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
+.dot.here{background:var(--amber);border-color:var(--amber-ink);color:var(--amber-ink);box-shadow:0 0 0 4px var(--amber)}
+.dot.next{border-color:var(--brand);border-style:dashed;color:var(--brand)}
+.dot.retired{background:var(--red);border-color:var(--red);color:#fff}
+.tl-legend{display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-size:.82rem;color:var(--muted)}
+.tl-legend span{display:inline-flex;align-items:center;gap:.35rem}
+.tl-legend .dot{width:.9rem;height:.9rem;border-width:2px;box-shadow:none}
+.wrap.flat{box-shadow:none;margin:0 -.2rem}
+.wrap.flat td,.wrap.flat th{padding:.45rem .55rem}
+.wrap.flat td:first-child{white-space:nowrap}

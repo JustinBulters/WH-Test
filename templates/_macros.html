@@ -1,0 +1,16 @@
+{# Where a group is now, from its most recent check-in or check-out. #}
+{% macro status(g) -%}
+  {%- if g.retired_at -%}
+    <span class="tag off">uitgevallen{% if g.retired_cp %} bij CP {{ g.retired_cp }}{% endif %}</span><br><span class="muted">{{ g.retired_at|localtime }}</span>
+  {%- elif g.checkout_at and g.checkpoint == 12 -%}
+    <span class="tag out">gefinisht</span><br><span class="muted">{{ g.checkout_at|localtime }}</span>
+  {%- elif g.checkout_at and g.checkpoint == 7 -%}
+    <span class="tag out">dag 1 klaar</span><br><span class="muted">morgen verder naar CP 8</span>
+  {%- elif g.checkout_at -%}
+    <span class="tag out">onderweg naar CP {{ g.checkpoint + 1 }}</span><br><span class="muted">vertrokken bij CP {{ g.checkpoint }} om {{ g.checkout_at|localtime('%H:%M') }}</span>
+  {%- elif g.checkin_at -%}
+    <span class="tag in">op CP {{ g.checkpoint }}</span><br><span class="muted">aangekomen {{ g.checkin_at|localtime('%H:%M') }}</span>
+  {%- else -%}
+    <span class="tag">nog niet gestart</span>
+  {%- endif -%}
+{%- endmacro %}

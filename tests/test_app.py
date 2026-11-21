@@ -54,7 +54,7 @@ def test_staff_checkin_scores_and_limits(client):
     client.post("/checkpoint/3/groep/1/uit", data={"csrf": t})
     client.post("/checkpoint/3/groep/1/in", data={"csrf": t})
     client.post("/checkpoint/3/groep/1/uit", data={"csrf": t})
-    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz": "8", "practical": "11"})
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "8", "practical_3": "11"})
     with wh.app.app_context():
         db = wh.get_db()
         v = db.execute("SELECT * FROM checkins").fetchone()
@@ -72,7 +72,7 @@ def test_viewer_read_only(client):
     assert "101" in page and "Anna, Bram" in page
     assert client.get("/checkpoint/5").status_code == 200
     assert client.post("/checkpoint/5/groep/1/in", data={"csrf": t}).status_code == 403
-    assert client.post("/checkpoint/5/groep/1", data={"csrf": t, "quiz": "3"}).status_code == 403
+    assert client.post("/checkpoint/5/groep/1", data={"csrf": t, "quiz_5": "3"}).status_code == 403
     assert client.get("/gebruikers").status_code == 403
 
 
@@ -157,7 +157,7 @@ def test_where_is_each_group(client):
     assert "nog niet gestart" in client.get("/").get_data(as_text=True)
     client.post("/checkpoint/1/groep/1/in", data={"csrf": t})
     client.post("/checkpoint/1/groep/1/uit", data={"csrf": t})
-    assert "onderweg na CP 1" in client.get("/").get_data(as_text=True)
+    assert "onderweg naar CP 2" in client.get("/").get_data(as_text=True)
     client.post("/checkpoint/2/groep/1/in", data={"csrf": t})
     assert "op CP 2" in client.get("/").get_data(as_text=True)
 
@@ -184,3 +184,34 @@ def test_old_database_gets_theme_column(tmp_path):
         wh.init_db()
         cols = [r[1] for r in wh.get_db().execute("PRAGMA table_info(users)")]
     assert "theme" in cols
+
+
+def test_status_and_group_page(client):
+    t = login(client, "admin")
+    home = client.get("/").get_data(as_text=True)
+    assert "nog niet gestart" in home
+    client.post("/checkpoint/1/groep/1/in", data={"csrf": t})
+    client.post("/checkpoint/1/groep/1/uit", data={"csrf": t})
+    assert "onderweg naar CP 2" in client.get("/").get_data(as_text=True)
+    client.post("/checkpoint/2/groep/1/in", data={"csrf": t})
+    page = client.get("/groepen/1").get_data(as_text=True)
+    assert 'class="dot done"' in page and 'class="dot here"' in page
+    client.post("/groepen/1", data={"csrf": t, "op": "scores", "quiz_1": "7", "practical_1": "9", "quiz_2": "6"})
+    with wh.app.app_context():
+        rows = {r["checkpoint"]: (r["quiz"], r["practical"]) for r in wh.get_db().execute("SELECT * FROM scores")}
+    assert rows == {1: (7, 9), 2: (6, None)}
+
+
+def test_status_end_of_day_and_finish(client):
+    t = login(client, "admin")
+    for cp in (7, 12):
+        client.post(f"/checkpoint/{cp}/groep/1/in", data={"csrf": t})
+        client.post(f"/checkpoint/{cp}/groep/1/uit", data={"csrf": t})
+        home = client.get("/").get_data(as_text=True)
+        assert ("dag 1 klaar" if cp == 7 else "gefinisht") in home
+
+
+def test_viewer_sees_group_page_but_cannot_score(client):
+    t = login(client, "kijk")
+    assert client.get("/groepen/1").status_code == 200
+    assert client.post("/groepen/1", data={"csrf": t, "op": "scores", "quiz_1": "5"}).status_code == 403
