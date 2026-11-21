@@ -1,6 +1,8 @@
 {% extends "base.html" %}{% block title %}CP {{ cp }}{% endblock %}
 {% block content %}
 <h1>Checkpoint {{ cp }}{% if cp_names().get(cp) %} · {{ cp_names()[cp] }}{% endif %} <small>· dag {{ CHECKPOINTS[cp] }}</small></h1>
+{% set info = cp_details(cp) %}
+{% if info.theme or info.crew %}<div class="panel cp-info">{% if info.theme %}<div><span class="muted">Thema</span><b>{{ info.theme }}</b></div>{% endif %}{% if info.crew %}<div><span class="muted">Bemanning</span><b>{{ info.crew }}</b></div>{% endif %}</div>{% endif %}
 {% set action = url_for('checkpoint', cp=cp) %}{% include "_lookup.html" %}
 <div class="wrap"><table>
 <tr><th>Groep</th><th>Wandelaars</th><th>Status</th><th></th></tr>

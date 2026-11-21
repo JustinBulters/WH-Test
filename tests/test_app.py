@@ -599,3 +599,14 @@ def test_offline_tap_time_and_json(client):
     assert "later verstuurd" in client.get("/logboek").get_data(as_text=True)
     assert client.get("/sw.js").headers["Service-Worker-Allowed"] == "/"
     assert wh.tap_time("2020-01-01T00:00:00") is None and wh.tap_time("nonsense") is None
+
+
+def test_checkpoint_theme_and_crew(client):
+    t = login(client, "admin")
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5",
+                                      "theme_3": "Eerste hulp", "crew_3": "Sanne & Mark"})
+    assert 'value="Eerste hulp"' in client.get("/checkpoints").get_data(as_text=True)
+    login(client, "post3")
+    page = client.get("/checkpoint/3").get_data(as_text=True)
+    assert "Eerste hulp" in page and "Sanne &amp; Mark" in page
+    assert '"crew": "Sanne \\u0026 Mark"' in client.get("/kaart").get_data(as_text=True)

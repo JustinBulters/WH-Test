@@ -35,7 +35,8 @@
                       html: '<span class="pin big ' + state(p) + '">' + p.cp + '</span>'});
   }
   function popup(p) {
-    var h = '<b>' + esc(p.label) + '</b> · dag ' + p.day + '<br>' + p.todo + ' verwacht · ' + p.in + ' aanwezig · ' + p.out + ' vertrokken';
+    var h = '<b>' + esc(p.label) + '</b> · dag ' + p.day + '<br>'
+      + (p.theme ? 'Thema: ' + esc(p.theme) + '<br>' : '') + (p.crew ? 'Bemanning: ' + esc(p.crew) + '<br>' : '') + p.todo + ' verwacht · ' + p.in + ' aanwezig · ' + p.out + ' vertrokken';
     if (p.url) h += '<br><a href="' + p.url + '">Open checkpoint</a>';
     if (admin) h += '<br><button type="button" class="danger small" data-remove="' + p.cp + '">Van kaart halen</button>';
     return h;

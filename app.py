@@ -348,7 +348,7 @@ def inject_globals():
                               (me["id"],)).fetchone()[0] if me else 0
     return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread,
             "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", ""),
-            "role_label": role_label, "cp_label": cp_label, "cp_names": cp_names,
+            "role_label": role_label, "cp_label": cp_label, "cp_names": cp_names, "cp_details": cp_details,
             "day1_last": checkpoints_per_day()[0], "last_cp": max(CHECKPOINTS), "start_date": start_date() if me else None,
             "today": lambda: datetime.now(LOCAL_TZ).date()}
 
@@ -388,6 +388,18 @@ def cp_names():
         g.cp_names = {int(r[0][8:]): r[1] for r in get_db().execute(
             "SELECT key, value FROM settings WHERE key LIKE 'cp_name_%'") if r[0][8:].isdigit()}
     return g.cp_names
+
+
+def cp_details(cp):
+    """Free-text notes per checkpoint: theme and who is manning it."""
+    if "cp_details" not in g:
+        g.cp_details = {}
+        for key, value in get_db().execute(
+                "SELECT key, value FROM settings WHERE key LIKE 'cp_theme_%' OR key LIKE 'cp_crew_%'"):
+            field, num = key[3:].split("_", 1)
+            if num.isdigit():
+                g.cp_details.setdefault(int(num), {})[field] = value
+    return g.cp_details.get(cp, {})
 
 
 def cp_label(cp):
@@ -1283,6 +1295,9 @@ def checkpoint_setup():
         for cp in range(1, MAX_PER_DAY * 2 + 1):
             name = request.form.get(f"name_{cp}", "").strip()[:40] if cp <= total else ""
             set_setting(db, f"cp_name_{cp}", name or None)
+            for field, limit in (("theme", 200), ("crew", 500)):
+                value = request.form.get(f"{field}_{cp}", "").strip()[:limit] if cp <= total else ""
+                set_setting(db, f"cp_{field}_{cp}", value or None)
             raw = request.form.get(f"leg_{cp}", "").strip() if cp < total else ""
             set_setting(db, f"leg_{cp}", str(int(raw)) if raw.isdigit() and 0 < int(raw) <= 24 * 60 else None)
         db.execute("DELETE FROM checkpoint_locations WHERE checkpoint > ?", (total,))
@@ -1326,7 +1341,8 @@ def map_view():
         return redirect(url_for("map_view"))
     stats, _ = checkpoint_stats(db)
     locs = {r["checkpoint"]: r for r in db.execute("SELECT * FROM checkpoint_locations")}
-    points = [{"cp": cp, "day": day, "label": cp_label(cp), "lat": locs[cp]["lat"] if cp in locs else None,
+    points = [{"cp": cp, "day": day, "label": cp_label(cp), "theme": cp_details(cp).get("theme", ""),
+               "crew": cp_details(cp).get("crew", ""), "lat": locs[cp]["lat"] if cp in locs else None,
                "lng": locs[cp]["lng"] if cp in locs else None, **stats[cp],
                "url": url_for("checkpoint", cp=cp) if can_view_checkpoint(cp) else None}
               for cp, day in CHECKPOINTS.items()]
