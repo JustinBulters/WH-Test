@@ -523,7 +523,8 @@ def test_merge_groups(client):
     assert "Cees loopt nu mee met groep 101" in page and "Cees" in page
     with wh.app.app_context():
         db = wh.get_db()
-        assert db.execute("SELECT group_id FROM hikers WHERE id = ?", (cees,)).fetchone()[0] == 1
+        assert tuple(db.execute("SELECT group_id, comment FROM hikers WHERE id = ?", (cees,)).fetchone()) == (
+            1, "Oorspronkelijk groep 102")
         g2 = db.execute("SELECT * FROM groups WHERE id = 2").fetchone()
         assert g2["retired_at"] and g2["retired_cp"] == 1 and g2["retired_note"] == "samengevoegd met 101"
         assert db.execute("SELECT COUNT(*) FROM checkins WHERE group_id = 2").fetchone()[0] == 1
@@ -535,6 +536,15 @@ def test_merge_groups(client):
     r = client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1", "hiker": [str(dirk)]},
                     follow_redirects=True)
     assert "heeft nu 4 wandelaars" in r.get_data(as_text=True)
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("UPDATE hikers SET group_id = 2, comment = 'glutenvrij' WHERE id = ?", (dirk,))
+        db.commit()
+    client.post("/groep/2/uitgevallen", data={"csrf": t, "undo": "1"})
+    client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1", "hiker": [str(dirk)]})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT comment FROM hikers WHERE id = ?", (dirk,)).fetchone()[0] == \
+            "glutenvrij; oorspronkelijk groep 102"
     login(client, "kijk")
     assert client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1"}).status_code in (400, 403)
 

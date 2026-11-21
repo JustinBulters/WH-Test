@@ -1215,8 +1215,10 @@ def group_edit(gid):
             elif not moving:
                 flash("Kies minstens één wandelaar die overstapt.", "error")
             else:
-                db.executemany("UPDATE hikers SET group_id = ? WHERE id = ?",
-                               [(target["id"], h["id"]) for h in moving])
+                origin = f"oorspronkelijk groep {group['name']}"
+                db.executemany("UPDATE hikers SET group_id = ?, comment = ? WHERE id = ?",
+                               [(target["id"], f"{h['comment']}; {origin}" if h["comment"] else origin.capitalize(),
+                                 h["id"]) for h in moving])
                 last = db.execute("SELECT checkpoint FROM checkins WHERE group_id = ? "
                                   "ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC LIMIT 1",
                                   (gid,)).fetchone()
