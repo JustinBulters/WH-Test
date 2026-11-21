@@ -108,22 +108,42 @@ def test_next_number_fills_gap_when_range_is_full(client):
 
 def test_retire_group(client):
     t = login(client, "post3")
-    assert client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "4"}).status_code == 403
-    client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "3"})
-    page = client.get("/checkpoint/3").get_data(as_text=True)
-    assert "uitgevallen" in page and "Inchecken" not in page
+    assert client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "3"}).status_code == 403
+    assert "Uitgevallen</button>" not in client.get("/checkpoint/3/groep/1").get_data(as_text=True)
+    client.post("/uitloggen", data={"csrf": t})
+    t = login(client, "admin")
     client.post("/checkpoint/3/groep/1/in", data={"csrf": t})
-    assert client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "3", "undo": "1"}).status_code == 403
+    client.post("/groep/1/uitgevallen", data={"csrf": t})
+    page = client.get("/checkpoint/4").get_data(as_text=True)
+    assert "uitgevallen" in page and "Inchecken" not in page
     with wh.app.app_context():
         g = wh.get_db().execute("SELECT * FROM groups WHERE id = 1").fetchone()
         assert g["retired_at"] and g["retired_cp"] == 3
-        assert wh.get_db().execute("SELECT COUNT(*) FROM checkins").fetchone()[0] == 0
-    client.post("/uitloggen", data={"csrf": t})
-    t = login(client, "admin")
     assert "uitgevallen bij CP 3" in client.get("/").get_data(as_text=True)
     client.post("/groep/1/uitgevallen", data={"csrf": t, "undo": "1"})
     with wh.app.app_context():
         assert wh.get_db().execute("SELECT retired_at FROM groups WHERE id = 1").fetchone()[0] is None
+
+
+def test_expected_per_checkpoint(client):
+    t = login(client, "admin")
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.executemany("INSERT INTO groups (name, category) VALUES (?, 'junioren')",
+                       [(str(n),) for n in range(102, 111)])  # 10 groups in total
+        db.commit()
+    for gid in (1, 2, 3):          # passed CP 3
+        for cp in (1, 2, 3):
+            client.post(f"/checkpoint/{cp}/groep/{gid}/in", data={"csrf": t})
+            client.post(f"/checkpoint/{cp}/groep/{gid}/uit", data={"csrf": t})
+    for gid in (4, 5):             # at CP 3 now
+        client.post(f"/checkpoint/3/groep/{gid}/in", data={"csrf": t})
+    client.post("/groep/10/uitgevallen", data={"csrf": t})  # dropped out: not expected
+    page = client.get("/").get_data(as_text=True)
+    import re
+    cards = dict(re.findall(r"<b>CP (\d+)</b>\s*<span class=\"tag\">(\d+) verwacht", page))
+    assert cards["3"] == "4" and cards["4"] == "9"
+    assert cards["1"] == "4"  # groups 4 and 5 were seen at CP 3, so they skipped CP 1
 
 
 def test_old_database_is_migrated(tmp_path):
