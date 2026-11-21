@@ -42,7 +42,8 @@ Every merge to `main` runs the tests on GitHub and then publishes a Docker image
 
 `compose.yaml` runs two containers:
 
-- `web`: the site on port 9999, with the database in the `data` volume, which is kept across updates. `pull_policy: always` makes a rebuild fetch the newest image.
+- `web`: the site on port 9999. The database and session key are in the `data` folder next to `compose.yaml` (`WH_DIR/data`, default `/volume1/docker/wh-hike/data`), kept across updates and visible in File Station. Set `WH_DIR` in `.env` if the project folder is somewhere else. `pull_policy: always` makes a rebuild fetch the newest image.
+- `move-data`: runs once before `web`. If the `data` folder is empty, it copies the database from the old `wh-hike_data` Docker volume (used by earlier versions) and makes the folder writable for the site. It never overwrites existing files.
 - `updater`: checks right away and then every 2 minutes for a newer image, and restarts `web` only when there is one, so merges go live by themselves. Its log shows each check.
 
 The first admin password is not in the repository. Put it in a `.env` file next to `compose.yaml`:

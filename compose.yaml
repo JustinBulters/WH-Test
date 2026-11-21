@@ -1,5 +1,9 @@
 # Run the hike site on a Synology NAS (Container Manager > Project) or any Docker host.
 # Every merge to main builds a new image on GitHub; the updater below picks it up.
+#
+# The database lives in the "data" folder next to this file (WH_DIR/data), so you can
+# see it and back it up in File Station. WH_DIR is this project's folder on the NAS;
+# if yours is not /volume1/docker/wh-hike, put WH_DIR=/your/path in the .env file.
 name: wh-hike
 
 services:
@@ -18,26 +22,50 @@ services:
       WH_BASE_URL: ${WH_BASE_URL:-}
       # WH_HTTPS: "1"                       # turn on once you only open the site via https://
     volumes:
-      - data:/data                          # database and session key, kept across updates
+      - ${WH_DIR:-/volume1/docker/wh-hike}/data:/data   # database and session key
+    depends_on:
+      move-data:
+        condition: service_completed_successfully
+
+  # Runs once before the site starts. The first time, it copies the database from the old
+  # hidden Docker volume into the data folder. It never overwrites a data folder that
+  # already has files, and it makes the folder writable for the site (user 1000).
+  move-data:
+    image: busybox:1.36
+    restart: "no"
+    volumes:
+      - data:/old                           # the old Docker volume (wh-hike_data), left untouched
+      - ${WH_DIR:-/volume1/docker/wh-hike}/data:/new
+    command:
+      - sh
+      - -c
+      - >-
+        if [ -z "$$(ls -A /new)" ] && [ -n "$$(ls -A /old)" ]; then
+        cp -a /old/. /new/ && echo "Database verhuisd naar de map data.";
+        else echo "Niets te verhuizen."; fi;
+        chown -R 1000:1000 /new
 
   # Checks GitHub for a newer version right away and then every 2 minutes, and restarts
   # the site only when there is one. Its Log tab in Container Manager shows each check.
   updater:
     image: docker:27-cli
     restart: unless-stopped
+    environment:
+      WH_DIR: ${WH_DIR:-/volume1/docker/wh-hike}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/compose:ro                      # this project folder, so the updater can read this file
+      # This project folder at the same path as on the NAS, so "data" above means the same folder.
+      - ${WH_DIR:-/volume1/docker/wh-hike}:${WH_DIR:-/volume1/docker/wh-hike}:ro
     command:
       - sh
       - -c
       - >-
         while true; do
         echo "$$(date '+%F %T') controleren op nieuwe versie";
-        docker compose -p wh-hike --project-directory /compose pull web &&
-        docker compose -p wh-hike --project-directory /compose up -d --no-deps web;
+        docker compose -p wh-hike --project-directory "$$WH_DIR" pull web &&
+        docker compose -p wh-hike --project-directory "$$WH_DIR" up -d --no-deps web;
         sleep 120;
         done
 
 volumes:
-  data:
+  data:                                     # old place of the database; only read by move-data
