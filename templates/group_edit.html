@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block title %}{{ group.name }}{% endblock %}
 {% block content %}
 <p><a href="{{ url_for('groups') }}">← Groepen</a></p>
-<h1>{{ group.name }} <span class="muted">· {{ group.category }} ({{ CATEGORIES[group.category][0] }}–{{ CATEGORIES[group.category][1] }})</span></h1>
+<h1>{{ group.name }} <small>· {{ group.category|capitalize }} ({{ CATEGORIES[group.category][0] }}–{{ CATEGORIES[group.category][1] }})</small></h1>
 
 {% for h in hikers %}
 <fieldset>

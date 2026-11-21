@@ -1,27 +1,37 @@
 <!doctype html>
-<html lang="nl">
+<html lang="nl" data-theme="{{ me.theme if me else 'auto' }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Hike{% endblock %} · WH</title>
+<meta name="theme-color" content="#2e6b45">
+<title>{% block title %}Hike{% endblock %} · WH Hike</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-<header>
-  <strong>WH Hike</strong>
+{% set ep = request.endpoint %}
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="{{ url_for('index') }}"><i></i>WH Hike</a>
+    {% if me %}
+    <div class="me">
+      <a href="{{ url_for('profile') }}" {% if ep == 'profile' %}class="on"{% endif %}>{{ me.username }}</a>
+      <form class="inline" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost">Uitloggen</button></form>
+    </div>
+    {% endif %}
+  </div>
   {% if me %}
-    {% if me.role == 'staff' and me.checkpoint %}<a href="{{ url_for('checkpoint', cp=me.checkpoint) }}">Checkpoint {{ me.checkpoint }}</a>{% endif %}
+  <nav>
+    {% if me.role == 'staff' and me.checkpoint %}<a href="{{ url_for('checkpoint', cp=me.checkpoint) }}" class="on">Checkpoint {{ me.checkpoint }}</a>{% endif %}
     {% if me.role in ('admin', 'viewer') %}
-      <a href="{{ url_for('index') }}">Overzicht</a>
-      <a href="{{ url_for('groups') }}">Groepen</a>
-      <a href="{{ url_for('results') }}">Uitslag</a>
+      <a href="{{ url_for('index') }}" {% if ep == 'index' %}class="on"{% endif %}>Overzicht</a>
+      <a href="{{ url_for('groups') }}" {% if ep in ('groups', 'group_edit') %}class="on"{% endif %}>Groepen</a>
+      <a href="{{ url_for('results') }}" {% if ep == 'results' %}class="on"{% endif %}>Uitslag</a>
     {% endif %}
     {% if me.role == 'admin' %}
-      <a href="{{ url_for('users') }}">Gebruikers</a>
-      <a href="{{ url_for('audit_log') }}">Logboek</a>
+      <a href="{{ url_for('users') }}" {% if ep == 'users' %}class="on"{% endif %}>Gebruikers</a>
+      <a href="{{ url_for('audit_log') }}" {% if ep == 'audit_log' %}class="on"{% endif %}>Logboek</a>
     {% endif %}
-    <a href="{{ url_for('change_password') }}" title="Wachtwoord wijzigen">{{ me.username }}</a>
-    <form class="inline" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Uitloggen</button></form>
+  </nav>
   {% endif %}
 </header>
 <main>
