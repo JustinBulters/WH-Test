@@ -470,7 +470,9 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         user = get_db().execute(
-            "SELECT * FROM users WHERE username = ? AND active = 1", (username,)).fetchone()
+            # Usernames are not case sensitive; an exact match wins if two only differ in case.
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE AND active = 1 "
+            "ORDER BY username = ? DESC LIMIT 1", (username, username)).fetchone()
         if user and check_password_hash(user["password_hash"], request.form.get("password", "")):
             session.clear()
             session["user_id"] = user["id"]
@@ -1409,6 +1411,8 @@ def users():
             password = form.get("password", "")
             if not username or len(password) < 8 or role not in ROLES:
                 flash("Vul gebruikersnaam, rol en een wachtwoord van minstens 8 tekens in.", "error")
+            elif db.execute("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE", (username,)).fetchone():
+                flash("Die gebruikersnaam bestaat al (hoofdletters tellen niet mee).", "error")
             else:
                 try:
                     db.execute("INSERT INTO users (username, password_hash, role, checkpoint, is_super) "
