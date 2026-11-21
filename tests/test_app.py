@@ -235,3 +235,86 @@ def test_viewer_sees_group_page_but_cannot_score(client):
     t = login(client, "kijk")
     assert client.get("/groepen/1").status_code == 200
     assert client.post("/groepen/1", data={"csrf": t, "op": "scores", "quiz_1": "5"}).status_code == 403
+
+
+def test_lookup_by_group_number(client):
+    login(client, "post3")
+    r = client.get("/checkpoint/3?q=101")
+    assert r.status_code == 302 and r.headers["Location"].endswith("/checkpoint/3/groep/1")
+    r = client.get("/checkpoint/3?q=999", follow_redirects=True)
+    assert "Groep 999 bestaat niet" in r.get_data(as_text=True)
+    # Generic lookup and QR link send staff to their own checkpoint.
+    assert client.get("/zoek?q=101").headers["Location"].endswith("/checkpoint/3/groep/1")
+    assert client.get("/g/1").headers["Location"].endswith("/checkpoint/3/groep/1")
+    login(client, "kijk")
+    assert client.get("/zoek?q=101").headers["Location"].endswith("/groepen/1")
+    assert client.get("/g/1").headers["Location"].endswith("/groepen/1")
+    assert client.get("/g/99").status_code == 404
+
+
+def test_emergency_phone_admin_only(client):
+    t = login(client, "admin")
+    client.post("/groepen/1", data={"csrf": t, "op": "phone", "phone": "06 1234 5678"})
+    assert "06 1234 5678" in client.get("/groepen/1").get_data(as_text=True)
+    assert "06 1234 5678" in client.get("/groepen").get_data(as_text=True)
+    client.post("/groepen", data={"csrf": t, "category": "senioren", "phone": "0201112222",
+                                  "hiker_name": ["Cees", "", ""], "hiker_comment": ["", "", ""]})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT phone FROM groups WHERE name = '201'").fetchone()[0] == "0201112222"
+    for user in ("kijk", "post3"):
+        t = login(client, user)
+        for url in ("/groepen/1", "/groepen", "/checkpoint/3/groep/1"):
+            r = client.get(url)
+            assert "1234 5678" not in r.get_data(as_text=True)
+    t = login(client, "kijk")
+    assert client.post("/groepen/1", data={"csrf": t, "op": "phone", "phone": "x"}).status_code == 403
+
+
+def test_scoreboard(client):
+    login(client, "kijk")
+    page = client.get("/scorebord").get_data(as_text=True)
+    assert 'http-equiv="refresh"' in page and "Junioren" in page and "101" in page
+    assert 'class="top"' not in page
+    login(client, "post3")
+    assert client.get("/scorebord").status_code == 403
+
+
+def test_excel_export(client):
+    import io
+    from openpyxl import load_workbook
+    t = login(client, "admin")
+    client.post("/checkpoint/1/groep/1/in", data={"csrf": t})
+    client.post("/checkpoint/1/groep/1/uit", data={"csrf": t})
+    client.post("/checkpoint/1/groep/1", data={"csrf": t, "quiz_1": "8", "practical_1": "6"})
+    r = client.get("/export.xlsx")
+    assert r.status_code == 200
+    wb = load_workbook(io.BytesIO(r.data))
+    assert wb.sheetnames == ["Uitslag", "Groepen", "Tijden en scores"]
+    assert list(wb["Uitslag"].iter_rows(min_row=2, values_only=True))[0][:7] == (
+        "Junioren", 1, 101, "Anna, Bram", 8, 6, 14)
+    row = list(wb["Tijden en scores"].iter_rows(min_row=2, values_only=True))[0]
+    assert row[:4] == (101, "Junioren", 1, 1) and row[7:] == (8, 6)
+    login(client, "kijk")
+    assert client.get("/export.xlsx").status_code == 403
+
+
+def test_group_cards_with_qr(client):
+    login(client, "admin")
+    page = client.get("/groepen/kaarten").get_data(as_text=True)
+    assert "<svg" in page and "Anna" in page and 'class="num">101' in page
+    login(client, "kijk")
+    assert client.get("/groepen/kaarten").status_code == 403
+
+
+def test_old_database_gets_phone_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, category TEXT NOT NULL)")
+    con.execute("INSERT INTO groups (name, category) VALUES ('101', 'junioren')")
+    con.commit()
+    con.close()
+    wh.app.config.update(DATABASE=str(path))
+    with wh.app.app_context():
+        wh.init_db()
+        assert wh.get_db().execute("SELECT phone FROM groups").fetchone()[0] == ""

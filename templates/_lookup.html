@@ -1,0 +1,6 @@
+{# Jump straight to a group by typing its number. Needs `action` (and optional `back`). #}
+<form class="lookup" method="get" action="{{ action }}" role="search">
+  <input name="q" inputmode="numeric" pattern="[0-9]*" placeholder="Groepsnummer, bv. 104" aria-label="Groepsnummer" autocomplete="off" required>
+  {% if back %}<input type="hidden" name="back" value="{{ back }}">{% endif %}
+  <button>Zoek</button>
+</form>

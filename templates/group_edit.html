@@ -6,6 +6,18 @@
 {% set back = url_for('group_edit', gid=group.id) %}
 {% include "_retired.html" %}
 
+{% if admin %}
+<fieldset>
+  <legend>Noodnummer <span class="muted">(alleen zichtbaar voor beheerders)</span></legend>
+  <form method="post" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="phone">
+    <label>Telefoon<input name="phone" type="tel" inputmode="tel" value="{{ group.phone }}" placeholder="06 12345678"></label>
+    <button>Opslaan</button>
+    {% if group.phone %}<a class="btn alt" href="tel:{{ group.phone|replace(' ', '') }}">Bellen</a>{% endif %}
+  </form>
+</fieldset>
+{% endif %}
+
 {% include "_timeline.html" %}
 
 <fieldset>

@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block title %}Groepskaarten{% endblock %}
+{% block content %}
+<div class="noprint">
+<p><a href="{{ url_for('groups') }}">← Groepen</a></p>
+<h1>Groepskaarten</h1>
+<p class="muted">Eén kaart per groep. De QR-code opent de groep: checkpointposten komen direct bij inchecken, beheerders en meekijkers op de groepspagina. Iedereen moet wel ingelogd zijn. De code wijst naar <b>{{ base }}</b>.</p>
+<p class="actions"><button onclick="print()">Printen</button></p>
+</div>
+<div class="cards">
+{% for c in cards %}
+<div class="gcard">
+  <div><span class="num">{{ c.group.name }}</span><span class="muted">{{ c.group.category|capitalize }}</span>
+  <ul>{% for n in c.names %}<li>{{ n }}</li>{% endfor %}</ul></div>
+  {{ c.qr }}
+</div>
+{% else %}<p class="muted">Nog geen groepen.</p>{% endfor %}
+</div>
+{% endblock %}

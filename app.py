@@ -10,9 +10,15 @@ from datetime import datetime, timezone
 from functools import wraps
 from zoneinfo import ZoneInfo
 
+import io
+
 import click
+import segno
 from flask import (Flask, abort, flash, g, redirect, render_template, request,
-                   session, url_for)
+                   send_file, session, url_for)
+from markupsafe import Markup
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -67,7 +73,8 @@ CREATE TABLE IF NOT EXISTS groups (
     name TEXT NOT NULL UNIQUE,  -- the group number, e.g. '101'; assigned automatically
     category TEXT NOT NULL CHECK (category IN ('junioren', 'senioren', 'veteranen')),
     retired_at TEXT,            -- set when the group dropped out ("uitgevallen")
-    retired_cp INTEGER
+    retired_cp INTEGER,
+    phone TEXT NOT NULL DEFAULT ''  -- emergency contact, only shown to admins
 );
 CREATE TABLE IF NOT EXISTS hikers (
     id INTEGER PRIMARY KEY,
@@ -135,6 +142,8 @@ def init_db():
     if "retired_at" not in gcols:
         db.execute("ALTER TABLE groups ADD COLUMN retired_at TEXT")
         db.execute("ALTER TABLE groups ADD COLUMN retired_cp INTEGER")
+    if "phone" not in gcols:
+        db.execute("ALTER TABLE groups ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
     # Hikers no longer have their own number: the group has it.
     if "number" in {r["name"] for r in db.execute("PRAGMA table_info(hikers)")}:
         db.commit()
@@ -465,6 +474,12 @@ def index():
 def checkpoint(cp):
     check_cp(cp)
     db = get_db()
+    q = request.args.get("q", "").strip()
+    if q:
+        found = db.execute("SELECT id FROM groups WHERE name = ?", (q,)).fetchone()
+        if found:
+            return redirect(url_for("checkpoint_group", cp=cp, gid=found["id"]))
+        flash(f"Groep {q} bestaat niet.", "error")
     groups = db.execute(
         "SELECT g.*, c.checkin_at, c.checkout_at, "
         "(SELECT COUNT(*) FROM hikers h WHERE h.group_id = g.id) AS size, "
@@ -575,7 +590,19 @@ def group_retire(gid):
 @app.route("/uitslag")
 @login_required("admin", "viewer")
 def results():
-    db = get_db()
+    return render_template("results.html", by_cat=ranking(get_db()))
+
+
+@app.route("/scorebord")
+@login_required("admin", "viewer")
+def scoreboard():
+    """Big read-only ranking for a screen; the page reloads itself every 30 seconds."""
+    return render_template("scoreboard.html", by_cat=ranking(get_db()), bare=True,
+                           now=localtime(now_utc(), "%H:%M"))
+
+
+def ranking(db):
+    """Groups per category, best total score first."""
     rows = db.execute(
         "SELECT g.id, g.name, g.category, g.retired_at, "
         "(SELECT GROUP_CONCAT(h.name, ', ') FROM hikers h WHERE h.group_id = g.id) AS members, "
@@ -583,8 +610,124 @@ def results():
         "COUNT(s.id) AS visits FROM groups g LEFT JOIN scores s ON s.group_id = g.id "
         "GROUP BY g.id ORDER BY (COALESCE(SUM(s.quiz), 0) + COALESCE(SUM(s.practical), 0)) DESC, CAST(g.name AS INTEGER)"
     ).fetchall()
-    by_cat = {cat: [r for r in rows if r["category"] == cat] for cat in CATEGORIES}
-    return render_template("results.html", by_cat=by_cat)
+    return {cat: [r for r in rows if r["category"] == cat] for cat in CATEGORIES}
+
+
+@app.route("/export.xlsx")
+@login_required("admin")
+def export_xlsx():
+    """Everything in one Excel file: ranking, groups and every checkpoint visit."""
+    db = get_db()
+    wb = Workbook()
+
+    def sheet(title, header, rows, first=False):
+        ws = wb.active if first else wb.create_sheet()
+        ws.title = title
+        ws.append(header)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for r in rows:
+            ws.append(list(r))
+        for col in ws.columns:
+            ws.column_dimensions[col[0].column_letter].width = max(
+                8, min(40, max(len(str(c.value or "")) for c in col) + 2))
+        ws.freeze_panes = "A2"
+
+    by_cat = ranking(db)
+    sheet("Uitslag", ["Categorie", "Plaats", "Groep", "Wandelaars", "Quiz", "Praktijk", "Totaal",
+                      "CP's", "Uitgevallen"],
+          [(cat.capitalize(), i, int(r["name"]), r["members"] or "", r["quiz"], r["practical"],
+            r["quiz"] + r["practical"], r["visits"], "ja" if r["retired_at"] else "")
+           for cat, rows in by_cat.items() for i, r in enumerate(rows, 1)], first=True)
+    hikers = {}
+    for h in db.execute("SELECT * FROM hikers ORDER BY id"):
+        hikers.setdefault(h["group_id"], []).append(h)
+    groups = db.execute("SELECT * FROM groups ORDER BY category, CAST(name AS INTEGER)").fetchall()
+    sheet("Groepen", ["Groep", "Categorie", "Wandelaars", "Opmerkingen", "Noodnummer",
+                      "Uitgevallen", "Uitgevallen bij CP"],
+          [(int(gr["name"]), gr["category"].capitalize(),
+            ", ".join(h["name"] for h in hikers.get(gr["id"], [])),
+            "; ".join(f"{h['name']}: {h['comment']}" for h in hikers.get(gr["id"], []) if h["comment"]),
+            gr["phone"], localtime(gr["retired_at"]) if gr["retired_at"] else "", gr["retired_cp"] or "")
+           for gr in groups])
+    visits = db.execute(
+        "SELECT g.name, g.category, c.checkpoint, c.checkin_at, c.checkout_at, s.quiz, s.practical "
+        "FROM groups g JOIN (SELECT group_id, checkpoint FROM checkins UNION "
+        "                    SELECT group_id, checkpoint FROM scores) k ON k.group_id = g.id "
+        "LEFT JOIN checkins c ON c.group_id = g.id AND c.checkpoint = k.checkpoint "
+        "LEFT JOIN scores s ON s.group_id = g.id AND s.checkpoint = k.checkpoint "
+        "ORDER BY g.category, CAST(g.name AS INTEGER), k.checkpoint").fetchall()
+    sheet("Tijden en scores", ["Groep", "Categorie", "CP", "Dag", "Ingecheckt", "Uitgecheckt",
+                               "Minuten op CP", "Quiz", "Praktijk"],
+          [(int(v["name"]), v["category"].capitalize(), v["checkpoint"], CHECKPOINTS.get(v["checkpoint"]),
+            localtime(v["checkin_at"]) if v["checkin_at"] else "",
+            localtime(v["checkout_at"]) if v["checkout_at"] else "",
+            minutes_between(v["checkin_at"], v["checkout_at"]) or "",
+            v["quiz"] or "", v["practical"] or "")
+           for v in visits if v["checkpoint"] is not None])
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    audit("export naar Excel gedownload")
+    stamp = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d_%H%M")
+    return send_file(out, as_attachment=True, download_name=f"hike-{stamp}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+def minutes_between(start, end):
+    if not start or not end:
+        return None
+    return round((datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() / 60)
+
+
+# ------------------------------------------------------- lookup, QR cards
+
+def group_page_for(user, gid):
+    """Where a group link takes this user: staff to their checkpoint, others to the group page."""
+    if user["role"] == "staff":
+        if not user["checkpoint"]:
+            abort(403)
+        return url_for("checkpoint_group", cp=user["checkpoint"], gid=gid)
+    return url_for("group_edit", gid=gid)
+
+
+@app.route("/g/<int:gid>")
+@login_required()
+def group_link(gid):
+    """Target of the QR code on a group card."""
+    if get_db().execute("SELECT 1 FROM groups WHERE id = ?", (gid,)).fetchone() is None:
+        abort(404)
+    return redirect(group_page_for(current_user(), gid))
+
+
+@app.route("/zoek")
+@login_required()
+def lookup():
+    q = request.args.get("q", "").strip()
+    found = get_db().execute("SELECT id FROM groups WHERE name = ?", (q,)).fetchone() if q else None
+    if found:
+        return redirect(group_page_for(current_user(), found["id"]))
+    if q:
+        flash(f"Groep {q} bestaat niet.", "error")
+    back = request.args.get("back", "")
+    return redirect(back if back.startswith("/") and not back.startswith("//") else url_for("index"))
+
+
+@app.route("/groepen/kaarten")
+@login_required("admin")
+def group_cards():
+    """Printable cards: group number, names and a QR code that opens the group."""
+    db = get_db()
+    base = (os.environ.get("WH_BASE_URL") or request.url_root).rstrip("/")
+    cards = []
+    for gr in db.execute("SELECT * FROM groups WHERE retired_at IS NULL "
+                         "ORDER BY category, CAST(name AS INTEGER)"):
+        names = [h["name"] for h in db.execute(
+            "SELECT name FROM hikers WHERE group_id = ? ORDER BY id", (gr["id"],))]
+        qr = segno.make(base + url_for("group_link", gid=gr["id"]), error="m")
+        cards.append({"group": gr, "names": names,
+                      "qr": Markup(qr.svg_inline(scale=4, border=2, omitsize=True))})
+    return render_template("cards.html", cards=cards, base=base)
 
 
 # --------------------------------------------------------- groups & hikers
@@ -610,7 +753,8 @@ def groups():
                 lo, hi = CATEGORIES[cat]
                 flash(f"Alle nummers van {lo} tot {hi} zijn al in gebruik.", "error")
             else:
-                cur = db.execute("INSERT INTO groups (name, category) VALUES (?, ?)", (str(number), cat))
+                cur = db.execute("INSERT INTO groups (name, category, phone) VALUES (?, ?, ?)",
+                                 (str(number), cat, request.form.get("phone", "").strip()[:40]))
                 db.executemany("INSERT INTO hikers (name, comment, group_id) VALUES (?, ?, ?)",
                                [(n, c, cur.lastrowid) for n, c in people])
                 db.commit()
@@ -636,7 +780,13 @@ def group_edit(gid):
             abort(403)
         form = request.form
         op = form.get("op")
-        if op == "scores":
+        if op == "phone":
+            phone = form.get("phone", "").strip()[:40]
+            db.execute("UPDATE groups SET phone = ? WHERE id = ?", (phone, gid))
+            db.commit()
+            audit(f"noodnummer groep {group['name']} gewijzigd")
+            flash("Noodnummer opgeslagen.", "ok")
+        elif op == "scores":
             changed = save_group_scores(db, group, list(CHECKPOINTS))
             audit(f"scores groep {group['name']}: " + ("; ".join(changed) or "geen wijziging"))
             flash("Scores opgeslagen.", "ok")

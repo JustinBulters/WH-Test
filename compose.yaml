@@ -14,6 +14,8 @@ services:
       #   WH_ADMIN_PASSWORD=your-password
       # Only used the very first time, to create the admin account.
       WH_ADMIN_PASSWORD: ${WH_ADMIN_PASSWORD:-}
+      # Web address printed in the QR codes on the group cards, e.g. https://hike.example.nl
+      WH_BASE_URL: ${WH_BASE_URL:-}
       # WH_HTTPS: "1"                       # turn on once you only open the site via https://
     volumes:
       - data:/data                          # database and session key, kept across updates

@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block title %}Scorebord{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="30">{% endblock %}
+{% block content %}
+<div class="sb-head"><h1>Scorebord</h1><span class="muted">Bijgewerkt {{ now }} · ververst elke 30 seconden · <a href="{{ url_for('results') }}">sluiten</a></span></div>
+<div class="sb">
+{% for cat, rows in by_cat.items() %}
+<section class="panel">
+  <h2>{{ cat|capitalize }}</h2>
+  <ol>
+  {% for r in rows %}
+    <li{% if r.retired_at %} class="off"{% endif %}><span class="pos">{{ loop.index }}</span><b>{{ r.name }}</b><span class="who">{{ r.members or '' }}</span><span class="pts">{{ r.quiz + r.practical }}</span></li>
+  {% else %}<li class="muted">Nog geen groepen.</li>{% endfor %}
+  </ol>
+</section>
+{% endfor %}
+</div>
+{% endblock %}

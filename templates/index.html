@@ -2,6 +2,7 @@
 {% from "_macros.html" import status %}
 {% block content %}
 <h1>Overzicht</h1>
+{% set action = url_for('lookup') %}{% set back = url_for('index') %}{% include "_lookup.html" %}
 <h2>Waar is elke groep nu?</h2>
 <div class="wrap"><table>
 <tr><th>Groep</th><th>Wandelaars</th><th>Laatst gezien</th></tr>

@@ -1,6 +1,7 @@
 {% extends "base.html" %}{% block title %}Uitslag{% endblock %}
 {% block content %}
 <h1>Uitslag</h1>
+<p class="actions"><a class="btn alt" href="{{ url_for('scoreboard') }}">Scorebord voor groot scherm</a>{% if me.role == 'admin' %}<a class="btn alt" href="{{ url_for('export_xlsx') }}">Download Excel</a>{% endif %}</p>
 {% for cat, rows in by_cat.items() %}
 <h2>{{ cat|capitalize }}</h2>
 <div class="wrap"><table>

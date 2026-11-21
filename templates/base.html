@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#2e6b45">
 <title>{% block title %}Hike{% endblock %} · WH Hike</title>
+{% block head %}{% endblock %}
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 {% set ep = request.endpoint %}
+{% if not bare %}
 <header class="top">
   <div class="top-in">
     <a class="brand" href="{{ url_for('index') }}"><i></i>WH Hike</a>
@@ -34,7 +36,8 @@
   </nav>
   {% endif %}
 </header>
-<main>
+{% endif %}
+<main{% if bare %} class="bare"{% endif %}>
 {% for cat, msg in get_flashed_messages(with_categories=true) %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
 {% block content %}{% endblock %}
 </main>
