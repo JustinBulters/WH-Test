@@ -1,0 +1,18 @@
+{# Route of one group: a line with a circle per checkpoint. Needs `progress`. #}
+<div class="panel">
+  {% for day in (1, 2) %}
+  <div class="tl-day">Dag {{ day }}</div>
+  <div class="tl">
+    {% for p in progress if p.day == day %}
+      {% if not loop.first %}<span class="seg {% if p.state in ('done', 'here', 'retired') %}on{% endif %}"></span>{% endif %}
+      <span class="dot {{ p.state }}" title="CP {{ p.cp }}{% if p.visit and p.visit.checkin_at %} · in {{ p.visit.checkin_at|localtime('%H:%M') }}{% endif %}{% if p.visit and p.visit.checkout_at %} · uit {{ p.visit.checkout_at|localtime('%H:%M') }}{% endif %}">CP{{ p.cp }}</span>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  <div class="tl-legend">
+    <span><i class="dot done"></i>geweest</span>
+    <span><i class="dot here"></i>nu hier</span>
+    <span><i class="dot next"></i>volgende</span>
+    {% if group.retired_at %}<span><i class="dot retired"></i>uitgevallen</span>{% endif %}
+  </div>
+</div>

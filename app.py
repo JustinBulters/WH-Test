@@ -362,6 +362,66 @@ def change_password():
     return redirect(url_for("profile"))
 
 
+# ---------------------------------------------------------------- progress
+
+def group_progress(db, group):
+    """Per checkpoint: visit, score and a state for the timeline.
+
+    States: done (checked out), here (checked in), next (where the group heads),
+    retired (dropped out there), todo.
+    """
+    visits = {r["checkpoint"]: r for r in db.execute(
+        "SELECT * FROM checkins WHERE group_id = ?", (group["id"],))}
+    scores = {r["checkpoint"]: r for r in db.execute(
+        "SELECT * FROM scores WHERE group_id = ?", (group["id"],))}
+    latest = max(visits.values(), key=lambda v: (v["checkout_at"] or v["checkin_at"] or "", v["id"]),
+                 default=None)
+    nxt = None
+    if not group["retired_at"]:
+        if latest is None:
+            nxt = 1
+        elif latest["checkout_at"] and latest["checkpoint"] < max(CHECKPOINTS):
+            nxt = latest["checkpoint"] + 1
+    rows = []
+    for cp in CHECKPOINTS:
+        v = visits.get(cp)
+        if group["retired_at"] and group["retired_cp"] == cp:
+            state = "retired"
+        elif v and v["checkout_at"]:
+            state = "done"
+        elif v and v["checkin_at"]:
+            state = "here"
+        elif cp == nxt:
+            state = "next"
+        else:
+            state = "todo"
+        rows.append({"cp": cp, "day": CHECKPOINTS[cp], "state": state, "visit": v, "score": scores.get(cp)})
+    return rows
+
+
+def save_group_scores(db, group, cps):
+    """Store quiz/practical from the form for the given checkpoints; returns changes for the log."""
+    changed = []
+    for cp in cps:
+        vals = []
+        for field in ("quiz", "practical"):
+            raw = request.form.get(f"{field}_{cp}", "")
+            vals.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None)
+        old = db.execute("SELECT quiz, practical FROM scores WHERE group_id = ? AND checkpoint = ?",
+                         (group["id"], cp)).fetchone()
+        if list(old or (None, None)) == vals:
+            continue
+        db.execute(
+            "INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (group_id, checkpoint) DO UPDATE SET "
+            "quiz = excluded.quiz, practical = excluded.practical, "
+            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+            (group["id"], cp, vals[0], vals[1], now_utc(), current_user()["id"]))
+        changed.append(f"CP{cp} quiz={vals[0]} praktijk={vals[1]}")
+    db.commit()
+    return changed
+
+
 # ---------------------------------------------------------------- overview
 
 @app.route("/")
@@ -422,24 +482,15 @@ def checkpoint_group(cp, gid):
 
     if request.method == "POST":
         check_cp(cp, edit=True)
-        vals = []
-        for field in ("quiz", "practical"):
-            raw = request.form.get(field, "")
-            vals.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None)
-        db.execute(
-            "INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at, updated_by) "
-            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (group_id, checkpoint) DO UPDATE SET "
-            "quiz = excluded.quiz, practical = excluded.practical, "
-            "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
-            (gid, cp, vals[0], vals[1], now_utc(), current_user()["id"]))
-        db.commit()
-        audit(f"scores CP{cp} groep {group['name']}: quiz={vals[0]} praktijk={vals[1]}")
+        changed = save_group_scores(db, group, [cp])
+        audit(f"scores groep {group['name']}: " + ("; ".join(changed) or "geen wijziging"))
         flash("Scores opgeslagen.", "ok")
         return redirect(url_for("checkpoint_group", cp=cp, gid=gid))
 
     visit = db.execute("SELECT * FROM checkins WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
     return render_template("group_scores.html", cp=cp, group=group, hikers=hikers, score=score,
+                           progress=group_progress(db, group),
                            visit=visit, can_edit=can_edit_checkpoint(cp))
 
 
@@ -565,16 +616,22 @@ def groups():
 
 
 @app.route("/groepen/<int:gid>", methods=["GET", "POST"])
-@login_required("admin")
+@login_required("admin", "viewer")
 def group_edit(gid):
     db = get_db()
     group = db.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
     if group is None:
         abort(404)
     if request.method == "POST":
+        if current_user()["role"] != "admin":
+            abort(403)
         form = request.form
         op = form.get("op")
-        if op == "hiker_save":
+        if op == "scores":
+            changed = save_group_scores(db, group, list(CHECKPOINTS))
+            audit(f"scores groep {group['name']}: " + ("; ".join(changed) or "geen wijziging"))
+            flash("Scores opgeslagen.", "ok")
+        elif op == "hiker_save":
             hid = form.get("hiker_id")
             name = form.get("name", "").strip()
             comment = form.get("comment", "").strip()
@@ -609,7 +666,8 @@ def group_edit(gid):
             return redirect(url_for("groups"))
         return redirect(url_for("group_edit", gid=gid))
     hikers = db.execute("SELECT * FROM hikers WHERE group_id = ? ORDER BY id", (gid,)).fetchall()
-    return render_template("group_edit.html", group=group, hikers=hikers)
+    return render_template("group_edit.html", group=group, hikers=hikers,
+                           progress=group_progress(db, group))
 
 
 # ------------------------------------------------------------------- users
