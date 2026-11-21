@@ -1,6 +1,8 @@
 {% extends "base.html" %}{% block title %}Groepen{% endblock %}
 {% block content %}
 <h1>Groepen en wandelaars</h1>
+{% set action = url_for('lookup') %}{% set back = url_for('groups') %}{% include "_lookup.html" %}
+{% if me.role == 'admin' %}<p class="actions"><a class="btn alt" href="{{ url_for('group_cards') }}">Groepskaarten met QR-code printen</a></p>{% endif %}
 {% if me.role == 'admin' %}
 <fieldset>
   <legend>Nieuwe groep</legend>
@@ -8,6 +10,7 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="row">
       <label>Categorie<select name="category">{% for c, r in CATEGORIES.items() %}<option value="{{ c }}">{{ c|capitalize }} ({{ r[0] }}–{{ r[1] }})</option>{% endfor %}</select></label>
+      <label>Noodnummer (alleen voor beheerders)<input name="phone" type="tel" inputmode="tel" placeholder="06 12345678"></label>
     </div>
     {% for i in range(3) %}
     <div class="row">
@@ -23,13 +26,14 @@
 {% for cat in CATEGORIES %}
 <h2>{{ cat|capitalize }}</h2>
 <div class="wrap"><table>
-<tr><th>Groep</th><th>Wandelaars</th></tr>
+<tr><th>Groep</th><th>Wandelaars</th>{% if me.role == 'admin' %}<th>Noodnummer</th>{% endif %}</tr>
 {% for g in groups if g.category == cat %}
 <tr>
   <td><a href="{{ url_for('group_edit', gid=g.id) }}">{{ g.name }}</a>{% if g.retired_at %}<br><span class="tag off">uitgevallen</span>{% endif %}</td>
   <td>{% for h in hikers.get(g.id, []) %}{{ h.name }}{% if h.comment %} <span class="note">{{ h.comment }}</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% else %}<span class="muted">leeg</span>{% endfor %}</td>
+  {% if me.role == 'admin' %}<td>{% if g.phone %}<a href="tel:{{ g.phone|replace(' ', '') }}">{{ g.phone }}</a>{% else %}<span class="muted">–</span>{% endif %}</td>{% endif %}
 </tr>
-{% else %}<tr><td colspan="2" class="muted">Geen groepen.</td></tr>{% endfor %}
+{% else %}<tr><td colspan="3" class="muted">Geen groepen.</td></tr>{% endfor %}
 </table></div>
 {% endfor %}
 {% endblock %}

@@ -1,3 +1,5 @@
 Flask>=3.0
 gunicorn>=22
 tzdata
+openpyxl>=3.1
+segno>=1.6

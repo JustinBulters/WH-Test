@@ -5,8 +5,11 @@ Website for tracking hikers at checkpoints during a two-day hike. Lightweight on
 ## What it does
 
 - **Checkpoints 1-12.** Checkpoints 1-7 are day 1 and 8-12 are day 2.
-- **Groups and hikers.** Hikers walk in groups of 2-3. Each hiker has a number (junioren 101-199, senioren 201-299, veteranen 301-399), a name and a comment field, for example for allergies. The number must fit the group's category.
+- **Groups and hikers.** Hikers walk in groups of 2-3. Each group gets the next free number in its category (junioren 101-199, senioren 201-299, veteranen 301-399). Each hiker has a name and a comment field, for example for allergies. A group can have an emergency phone number that only admins see.
 - **Where is each group now.** The overview page lists every group with its last checkpoint: at a checkpoint, on the way after one, or not started yet.
+- **Quick lookup.** Type a group number at the top of a checkpoint page, the overview or the groups page to jump straight to that group.
+- **Group cards.** Admins can print a card per group with a QR code. Scanning it opens the group: staff land on their own checkpoint's page for that group, others on the group page.
+- **Scoreboard and export.** `/scorebord` is a big ranking per category for a screen, refreshed every 30 seconds. Admins can download everything (ranking, groups, times and scores) as an Excel file from the results page.
 - **Check-in and check-out** per group per checkpoint, stamped with the server time when the button is pressed. Times are stored in UTC and shown in Dutch time (Europe/Amsterdam).
 - **Scores.** Each group gets a quiz score and a practical score from 1 to 10 at each checkpoint. The results page ranks groups per category.
 - **Roles.**
@@ -30,6 +33,7 @@ Settings via environment variables:
 - `WH_SECRET_KEY`: session secret. If unset, one is generated in `.secret_key`.
 
 - `WH_ADMIN_PASSWORD`: password for the first admin. If unset, `init-db` generates one and prints it.
+- `WH_BASE_URL`: the public web address used in the QR codes, for example `https://hike.example.nl`. If unset, the address you opened the cards page with is used.
 
 ## Hosting on your own server or NAS (Docker)
 
