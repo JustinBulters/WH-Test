@@ -486,3 +486,54 @@ def test_map_place_and_remove_checkpoint(client):
         t = login(client, user)
         assert client.get("/kaart").status_code == 200
         assert client.post("/kaart", data={"csrf": t, "cp": "3", "lat": "1", "lng": "1"}).status_code == 403
+
+
+def test_checkpoint_count_and_names(client):
+    t = login(client, "admin")
+    client.post("/checkpoints", data={"csrf": t, "day1": "4", "day2": "3", "name_2": "Molen", "name_9": "x"})
+    page = client.get("/").get_data(as_text=True)
+    assert "CP 2 · Molen" in page and "CP 7" in page and "CP 8" not in page
+    assert "Checkpoint 2 · Molen" in client.get("/checkpoint/2").get_data(as_text=True)
+    assert client.get("/checkpoint/8").status_code == 404
+    # End of day 1 is now CP 4, finish is CP 7.
+    for cp in (1, 2, 3, 4):
+        client.post(f"/checkpoint/{cp}/groep/1/in", data={"csrf": t})
+        client.post(f"/checkpoint/{cp}/groep/1/uit", data={"csrf": t})
+    page = client.get("/").get_data(as_text=True)
+    assert "dag 1 klaar" in page and "morgen verder naar CP 5" in page
+    # Cannot drop a checkpoint that has data (CP 3 is also post3's checkpoint).
+    r = client.post("/checkpoints", data={"csrf": t, "day1": "2", "day2": "1"}, follow_redirects=True)
+    assert "Dat kan niet" in r.get_data(as_text=True)
+    assert "CP 7" in client.get("/").get_data(as_text=True)
+    login(client, "kijk")
+    assert client.get("/checkpoints").status_code == 403
+
+
+def test_merge_groups(client):
+    t = login(client, "admin")
+    client.post("/groepen", data={"csrf": t, "category": "junioren", "hiker_name": ["Cees", "Dirk", ""],
+                                  "hiker_comment": ["", "", ""]})
+    client.post("/checkpoint/1/groep/2/in", data={"csrf": t})
+    with wh.app.app_context():
+        cees = wh.get_db().execute("SELECT id FROM hikers WHERE name = 'Cees'").fetchone()[0]
+    assert "Samenvoegen" in client.get("/groepen/2").get_data(as_text=True)
+    r = client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1", "hiker": [str(cees)]},
+                    follow_redirects=True)
+    page = r.get_data(as_text=True)
+    assert "Cees loopt nu mee met groep 101" in page and "Cees" in page
+    with wh.app.app_context():
+        db = wh.get_db()
+        assert db.execute("SELECT group_id FROM hikers WHERE id = ?", (cees,)).fetchone()[0] == 1
+        g2 = db.execute("SELECT * FROM groups WHERE id = 2").fetchone()
+        assert g2["retired_at"] and g2["retired_cp"] == 1 and g2["retired_note"] == "samengevoegd met 101"
+        assert db.execute("SELECT COUNT(*) FROM checkins WHERE group_id = 2").fetchone()[0] == 1
+    assert "samengevoegd met 101" in client.get("/").get_data(as_text=True)
+    # A fourth hiker gives a warning.
+    with wh.app.app_context():
+        dirk = wh.get_db().execute("SELECT id FROM hikers WHERE name = 'Dirk'").fetchone()[0]
+    client.post("/groep/2/uitgevallen", data={"csrf": t, "undo": "1"})
+    r = client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1", "hiker": [str(dirk)]},
+                    follow_redirects=True)
+    assert "heeft nu 4 wandelaars" in r.get_data(as_text=True)
+    login(client, "kijk")
+    assert client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1"}).status_code in (400, 403)

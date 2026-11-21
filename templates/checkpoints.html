@@ -1,0 +1,26 @@
+{% extends "base.html" %}{% block title %}Checkpoints{% endblock %}
+{% block content %}
+<h1>Checkpoints</h1>
+<p class="muted">De hike heeft altijd twee dagen. Kies hoeveel checkpoints elke dag heeft; de nummers lopen door (dag 2 begint na de laatste CP van dag 1). Een naam is optioneel.</p>
+<form method="post">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <fieldset>
+    <legend>Aantal per dag</legend>
+    <div class="row">
+      {% for day in (1, 2) %}
+      <label>Dag {{ day }}<select name="day{{ day }}">{% for n in range(1, max_per_day + 1) %}<option {% if per_day[day - 1] == n %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+      {% endfor %}
+    </div>
+    <p class="muted">Pas je het aantal aan? Druk dan eerst op Opslaan, dan verschijnen de juiste naamvelden.</p>
+  </fieldset>
+  {% for day in (1, 2) %}
+  <fieldset>
+    <legend>Dag {{ day }}</legend>
+    {% for cp, d in CHECKPOINTS.items() if d == day %}
+    <div class="row cp-name"><label>CP {{ cp }}<input name="name_{{ cp }}" value="{{ cp_names().get(cp, '') }}" maxlength="40" placeholder="bv. Molen, Kerk, Bosrand"></label></div>
+    {% endfor %}
+  </fieldset>
+  {% endfor %}
+  <div class="actions"><button class="big">Opslaan</button></div>
+</form>
+{% endblock %}

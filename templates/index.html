@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% block title %}Overzicht{% endblock %}
-{% from "_macros.html" import status %}
+{% from "_macros.html" import status with context %}
 {% block content %}
 <h1>Overzicht</h1>
 {% set action = url_for('lookup') %}{% set back = url_for('index') %}{% include "_lookup.html" %}
@@ -24,7 +24,7 @@
 <div class="grid">
   {% for cp, d in CHECKPOINTS.items() if d == day %}
   <a class="card" href="{{ url_for('checkpoint', cp=cp) }}">
-    <b>CP {{ cp }}</b>
+    <b>{{ cp_label(cp) }}</b>
     <span class="tag">{{ stats[cp].todo }} verwacht</span>
     <span class="tag in">{{ stats[cp].in }} aanwezig</span>
     <span class="tag out">{{ stats[cp].out }} vertrokken</span>

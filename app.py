@@ -6,6 +6,7 @@ so it stays usable on phones with poor signal. UI text is Dutch.
 import os
 import secrets
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from functools import wraps
 from zoneinfo import ZoneInfo
@@ -30,8 +31,33 @@ CATEGORIES = {
     "senioren": (201, 299),
     "veteranen": (301, 399),
 }
-# Checkpoint number -> day.
-CHECKPOINTS = {n: (1 if n <= 7 else 2) for n in range(1, 13)}
+# How many checkpoints each of the two days has, unless an admin changed it.
+DEFAULT_PER_DAY = {1: 7, 2: 5}
+MAX_PER_DAY = 25
+
+
+class _Checkpoints(Mapping):
+    """Checkpoint number -> day, read from the settings for the current request.
+
+    Numbering runs on: day 1 is CP 1..n1, day 2 is CP n1+1..n1+n2.
+    """
+    def _data(self):
+        if "checkpoints" not in g:
+            n1, n2 = checkpoints_per_day()
+            g.checkpoints = {n: (1 if n <= n1 else 2) for n in range(1, n1 + n2 + 1)}
+        return g.checkpoints
+
+    def __getitem__(self, cp):
+        return self._data()[cp]
+
+    def __iter__(self):
+        return iter(self._data())
+
+    def __len__(self):
+        return len(self._data())
+
+
+CHECKPOINTS = _Checkpoints()
 ROLES = {"admin": "Beheerder", "staff": "Checkpointpost", "viewer": "Meekijker"}
 
 app = Flask(__name__)
@@ -75,7 +101,8 @@ CREATE TABLE IF NOT EXISTS groups (
     category TEXT NOT NULL CHECK (category IN ('junioren', 'senioren', 'veteranen')),
     retired_at TEXT,            -- set when the group dropped out ("uitgevallen")
     retired_cp INTEGER,
-    phone TEXT NOT NULL DEFAULT ''  -- emergency contact, only shown to admins
+    phone TEXT NOT NULL DEFAULT '',  -- emergency contact, only shown to admins
+    retired_note TEXT NOT NULL DEFAULT ''  -- e.g. 'samengevoegd met 101'
 );
 CREATE TABLE IF NOT EXISTS hikers (
     id INTEGER PRIMARY KEY,
@@ -184,6 +211,8 @@ def init_db():
         db.execute("ALTER TABLE groups ADD COLUMN retired_cp INTEGER")
     if "phone" not in gcols:
         db.execute("ALTER TABLE groups ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+    if "retired_note" not in gcols:
+        db.execute("ALTER TABLE groups ADD COLUMN retired_note TEXT NOT NULL DEFAULT ''")
     # Hikers no longer have their own number: the group has it.
     if "number" in {r["name"] for r in db.execute("PRAGMA table_info(hikers)")}:
         db.commit()
@@ -317,7 +346,8 @@ def inject_globals():
                               (me["id"],)).fetchone()[0] if me else 0
     return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread,
             "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", ""),
-            "role_label": role_label, "start_date": start_date() if me else None,
+            "role_label": role_label, "cp_label": cp_label, "cp_names": cp_names,
+            "day1_last": checkpoints_per_day()[0], "last_cp": max(CHECKPOINTS), "start_date": start_date() if me else None,
             "today": lambda: datetime.now(LOCAL_TZ).date()}
 
 
@@ -341,6 +371,27 @@ def set_setting(db, key, value):
     else:
         db.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+
+
+def checkpoints_per_day():
+    out = []
+    for day in (1, 2):
+        raw = get_setting(f"cp_day{day}", "")
+        out.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= MAX_PER_DAY else DEFAULT_PER_DAY[day])
+    return tuple(out)
+
+
+def cp_names():
+    if "cp_names" not in g:
+        g.cp_names = {int(r[0][8:]): r[1] for r in get_db().execute(
+            "SELECT key, value FROM settings WHERE key LIKE 'cp_name_%'") if r[0][8:].isdigit()}
+    return g.cp_names
+
+
+def cp_label(cp):
+    """'CP 3 · Molen' when the checkpoint has a name, else 'CP 3'."""
+    name = cp_names().get(cp)
+    return f"CP {cp} · {name}" if name else f"CP {cp}"
 
 
 def start_date():
@@ -568,7 +619,7 @@ def index():
     stats, active = checkpoint_stats(db)
     # Where is each group now: its most recent check-in or check-out.
     where = db.execute(
-        "SELECT g.id, g.name, g.category, g.retired_at, g.retired_cp, "
+        "SELECT g.id, g.name, g.category, g.retired_at, g.retired_cp, g.retired_note, "
         "c.checkpoint, c.checkin_at, c.checkout_at, "
         "(SELECT GROUP_CONCAT(h.name, ', ') FROM hikers h WHERE h.group_id = g.id) AS members "
         "FROM groups g LEFT JOIN ("
@@ -820,7 +871,7 @@ def group_retire(gid):
                           (gid,)).fetchone()
         cp = last[0] if last else None
     if request.form.get("undo"):
-        db.execute("UPDATE groups SET retired_at = NULL, retired_cp = NULL WHERE id = ?", (gid,))
+        db.execute("UPDATE groups SET retired_at = NULL, retired_cp = NULL, retired_note = '' WHERE id = ?", (gid,))
         audit(f"groep {group['name']} weer actief gemaakt")
         flash(f"Groep {group['name']} doet weer mee.", "ok")
     elif not group["retired_at"]:
@@ -1060,6 +1111,38 @@ def group_edit(gid):
                 db.commit()
                 audit(f"wandelaar {h['name']} uit groep {group['name']} verwijderd")
                 flash("Wandelaar verwijderd.", "ok")
+        elif op == "merge":
+            target = db.execute("SELECT * FROM groups WHERE id = ? AND id != ? AND retired_at IS NULL",
+                                (form.get("target", ""), gid)).fetchone()
+            ids = [int(i) for i in form.getlist("hiker") if i.isdigit()]
+            moving = db.execute(
+                f"SELECT * FROM hikers WHERE group_id = ? AND id IN ({','.join('?' * len(ids))})",
+                [gid] + ids).fetchall() if ids else []
+            if target is None:
+                flash("Kies een groep om bij aan te sluiten.", "error")
+            elif not moving:
+                flash("Kies minstens één wandelaar die overstapt.", "error")
+            else:
+                db.executemany("UPDATE hikers SET group_id = ? WHERE id = ?",
+                               [(target["id"], h["id"]) for h in moving])
+                last = db.execute("SELECT checkpoint FROM checkins WHERE group_id = ? "
+                                  "ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC LIMIT 1",
+                                  (gid,)).fetchone()
+                note = f"samengevoegd met {target['name']}"
+                if group["retired_at"]:
+                    db.execute("UPDATE groups SET retired_note = ? WHERE id = ?", (note, gid))
+                else:
+                    db.execute("UPDATE groups SET retired_at = ?, retired_cp = ?, retired_note = ? WHERE id = ?",
+                               (now_utc(), last[0] if last else None, note, gid))
+                db.commit()
+                names = ", ".join(h["name"] for h in moving)
+                audit(f"groep {group['name']} samengevoegd met {target['name']}: {names} overgestapt")
+                size = db.execute("SELECT COUNT(*) FROM hikers WHERE group_id = ?", (target["id"],)).fetchone()[0]
+                flash(f"{names} {'loopt' if len(moving) == 1 else 'lopen'} nu mee met groep {target['name']}. "
+                      f"Groep {group['name']} staat als uitgevallen.", "ok")
+                if size > 3:
+                    flash(f"Let op: groep {target['name']} heeft nu {size} wandelaars.", "error")
+                return redirect(url_for("group_edit", gid=target["id"]))
         elif op == "group_delete":
             db.execute("DELETE FROM hikers WHERE group_id = ?", (gid,))
             db.execute("DELETE FROM groups WHERE id = ?", (gid,))
@@ -1069,11 +1152,50 @@ def group_edit(gid):
             return redirect(url_for("groups"))
         return redirect(url_for("group_edit", gid=gid))
     hikers = db.execute("SELECT * FROM hikers WHERE group_id = ? ORDER BY id", (gid,)).fetchall()
-    return render_template("group_edit.html", group=group, hikers=hikers,
+    others = db.execute(
+        "SELECT g.id, g.name, g.category, (SELECT COUNT(*) FROM hikers h WHERE h.group_id = g.id) AS size "
+        "FROM groups g WHERE g.id != ? AND g.retired_at IS NULL ORDER BY g.category != ?, "
+        "CAST(g.name AS INTEGER)", (gid, group["category"])).fetchall()
+    return render_template("group_edit.html", group=group, hikers=hikers, others=others,
                            progress=group_progress(db, group))
 
 
 # ------------------------------------------------------------------- users
+
+@app.route("/checkpoints", methods=["GET", "POST"])
+@login_required("admin")
+def checkpoint_setup():
+    """Admins set how many checkpoints each day has and give them names."""
+    db = get_db()
+    if request.method == "POST":
+        counts = []
+        for day in (1, 2):
+            raw = request.form.get(f"day{day}", "")
+            counts.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= MAX_PER_DAY else None)
+        if None in counts:
+            flash(f"Kies per dag 1 tot {MAX_PER_DAY} checkpoints.", "error")
+            return redirect(url_for("checkpoint_setup"))
+        total = sum(counts)
+        used = sorted({r[0] for r in db.execute(
+            "SELECT checkpoint FROM checkins WHERE checkpoint > ? UNION "
+            "SELECT checkpoint FROM scores WHERE checkpoint > ? UNION "
+            "SELECT checkpoint FROM users WHERE checkpoint > ?", (total, total, total))})
+        if used:
+            flash("Dat kan niet: " + ", ".join(f"CP {c}" for c in used) + " heeft al in- of uitchecks, "
+                  "scores of een checkpointpost. Haal die eerst weg.", "error")
+            return redirect(url_for("checkpoint_setup"))
+        for day, n in zip((1, 2), counts):
+            set_setting(db, f"cp_day{day}", str(n))
+        for cp in range(1, MAX_PER_DAY * 2 + 1):
+            name = request.form.get(f"name_{cp}", "").strip()[:40] if cp <= total else ""
+            set_setting(db, f"cp_name_{cp}", name or None)
+        db.execute("DELETE FROM checkpoint_locations WHERE checkpoint > ?", (total,))
+        db.commit()
+        audit(f"checkpoints ingesteld: dag 1 = {counts[0]}, dag 2 = {counts[1]}")
+        flash("Checkpoints opgeslagen.", "ok")
+        return redirect(url_for("checkpoint_setup"))
+    return render_template("checkpoints.html", per_day=checkpoints_per_day(), max_per_day=MAX_PER_DAY)
+
 
 @app.route("/kaart", methods=["GET", "POST"])
 @login_required()
@@ -1107,7 +1229,7 @@ def map_view():
         return redirect(url_for("map_view"))
     stats, _ = checkpoint_stats(db)
     locs = {r["checkpoint"]: r for r in db.execute("SELECT * FROM checkpoint_locations")}
-    points = [{"cp": cp, "day": day, "lat": locs[cp]["lat"] if cp in locs else None,
+    points = [{"cp": cp, "day": day, "label": cp_label(cp), "lat": locs[cp]["lat"] if cp in locs else None,
                "lng": locs[cp]["lng"] if cp in locs else None, **stats[cp],
                "url": url_for("checkpoint", cp=cp) if can_view_checkpoint(cp) else None}
               for cp, day in CHECKPOINTS.items()]

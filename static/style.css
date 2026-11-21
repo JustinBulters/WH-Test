@@ -168,3 +168,6 @@ fieldset.danger-zone legend{color:var(--red)}
 .pin.done{background:#2e6b45;color:#fff}
 .leaflet-popup-content{font:14px/1.45 system-ui,sans-serif}
 .leaflet-popup-content button.small{min-height:0;padding:.3rem .6rem;font-size:.85rem;margin-top:.4rem}
+.row.cp-name{margin:.25rem 0}
+.row.cp-name label{flex:1;flex-direction:row;align-items:center;gap:.75rem}
+.row.cp-name label input{flex:1;min-width:0}

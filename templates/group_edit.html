@@ -75,6 +75,24 @@
 </form>
 </fieldset>
 
+{% if hikers and others %}
+<h2>Samenvoegen</h2>
+<fieldset>
+  <legend>Wandelaars laten overstappen naar een andere groep</legend>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="merge">
+    <p class="muted">Bijvoorbeeld: één wandelaar van deze groep valt uit en de ander loopt verder met een andere groep. De gekozen wandelaars gaan naar die groep, en groep {{ group.name }} komt op uitgevallen te staan. De in- en uitchecks en scores van groep {{ group.name }} blijven bewaard.</p>
+    <div class="choice">
+      {% for h in hikers %}<label><input type="checkbox" name="hiker" value="{{ h.id }}" checked> {{ h.name }}</label>{% endfor %}
+    </div>
+    <div class="row">
+      <label>Gaat verder met groep<select name="target" required><option value="">Kies…</option>{% for o in others %}<option value="{{ o.id }}">{{ o.name }} · {{ o.category|capitalize }} ({{ o.size }} wandelaar{{ 's' if o.size != 1 }})</option>{% endfor %}</select></label>
+      <button class="stop">Samenvoegen</button>
+    </div>
+  </form>
+</fieldset>
+{% endif %}
+
 <h2>Groep verwijderen</h2>
 <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="group_delete"><button class="danger">Groep {{ group.name }} met wandelaars verwijderen</button></form>
 {% else %}
