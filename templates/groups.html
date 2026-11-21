@@ -8,18 +8,22 @@
   <legend>Nieuwe groep</legend>
   <form method="post">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="row">
-      <label>Categorie<select name="category">{% for c, r in CATEGORIES.items() %}<option value="{{ c }}">{{ c|capitalize }} ({{ r[0] }}–{{ r[1] }})</option>{% endfor %}</select></label>
-      <label>Noodnummer (alleen voor beheerders)<input name="phone" type="tel" inputmode="tel" placeholder="06 12345678"></label>
-    </div>
     {% for i in range(3) %}
     <div class="row">
       <label>Naam {{ i + 1 }}{% if i == 2 %} (optioneel){% endif %}<input name="hiker_name" {% if i == 0 %}required{% endif %}></label>
       <label style="flex:1 1 12rem">Opmerking (bv. allergie)<input name="hiker_comment"></label>
     </div>
     {% endfor %}
-    <div class="actions"><button>Groep toevoegen</button></div>
-    <p class="muted">De groep krijgt automatisch het volgende vrije nummer in de categorie.</p>
+    <div class="row">
+      <label>Noodnummer (alleen voor beheerders)<input name="phone" type="tel" inputmode="tel" placeholder="06 12345678"></label>
+    </div>
+    <p class="muted" style="margin:.75rem 0 .4rem">Opslaan als:</p>
+    <div class="cat-buttons">
+      {% for c, r in CATEGORIES.items() %}
+      <button name="category" value="{{ c }}" class="big">{{ c|capitalize }}<small>{{ r[0] }}–{{ r[1] }}</small></button>
+      {% endfor %}
+    </div>
+    <p class="muted">De groep krijgt automatisch het volgende vrije nummer in de gekozen categorie.</p>
   </form>
 </fieldset>
 {% endif %}

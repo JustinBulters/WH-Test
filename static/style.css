@@ -186,3 +186,7 @@ fieldset.danger-zone legend{color:var(--red)}
 .row.cp-extra input{width:100%}
 .panel.cp-info{display:flex;flex-wrap:wrap;gap:.5rem 2rem}
 .panel.cp-info div{display:flex;flex-direction:column}
+.cat-buttons{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}
+.cat-buttons button.big{padding:.6rem .4rem}
+.cat-buttons button{flex-direction:column;justify-content:center;gap:0;line-height:1.2}
+.cat-buttons small{font-weight:500;opacity:.8;font-size:.8rem}
