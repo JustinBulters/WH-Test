@@ -17,13 +17,14 @@
 </table></div>
 
 <h2>Per checkpoint</h2>
-<p class="muted">{{ total }} groepen in totaal. Per checkpoint: nu aanwezig / vertrokken.</p>
+<p class="muted">{{ total }} groepen in totaal{% if active != total %}, {{ total - active }} uitgevallen{% endif %}. Per checkpoint: nog te verwachten, nu aanwezig en vertrokken.</p>
 {% for day in (1, 2) %}
 <h3>Dag {{ day }}</h3>
 <div class="grid">
   {% for cp, d in CHECKPOINTS.items() if d == day %}
   <a class="card" href="{{ url_for('checkpoint', cp=cp) }}">
     <b>CP {{ cp }}</b>
+    <span class="tag">{{ stats[cp].todo }} verwacht</span>
     <span class="tag in">{{ stats[cp].in }} aanwezig</span>
     <span class="tag out">{{ stats[cp].out }} vertrokken</span>
   </a>

@@ -439,6 +439,14 @@ def index():
             "SELECT checkpoint, SUM(checkin_at IS NOT NULL AND checkout_at IS NULL) AS present, "
             "SUM(checkout_at IS NOT NULL) AS done FROM checkins GROUP BY checkpoint"):
         stats[row["checkpoint"]] = {"in": row["present"], "out": row["done"]}
+    # Still expected at a checkpoint: groups that have not dropped out, have not been
+    # there yet and have not been seen at a later checkpoint either.
+    furthest = {g["id"]: g["furthest"] for g in db.execute(
+        "SELECT g.id, g.retired_at, MAX(c.checkpoint) AS furthest FROM groups g "
+        "LEFT JOIN checkins c ON c.group_id = g.id GROUP BY g.id HAVING g.retired_at IS NULL")}
+    for cp in CHECKPOINTS:
+        stats[cp]["todo"] = sum(1 for f in furthest.values() if f is None or f < cp)
+    active = len(furthest)
     # Where is each group now: its most recent check-in or check-out.
     where = db.execute(
         "SELECT g.id, g.name, g.category, g.retired_at, g.retired_cp, "
@@ -449,7 +457,7 @@ def index():
         "    ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC) AS rn FROM checkins"
         ") c ON c.group_id = g.id AND c.rn = 1 "
         "ORDER BY g.category, CAST(g.name AS INTEGER)").fetchall()
-    return render_template("index.html", stats=stats, total=total, where=where)
+    return render_template("index.html", stats=stats, total=total, active=active, where=where)
 
 
 @app.route("/checkpoint/<int:cp>")
@@ -537,21 +545,22 @@ def checkpoint_stamp(cp, gid, action):
 
 
 @app.route("/groep/<int:gid>/uitgevallen", methods=["POST"])
-@login_required("admin", "staff")
+@login_required("admin")
 def group_retire(gid):
-    """Mark a group as dropped out, or (admin only) undo that."""
-    user = current_user()
+    """Mark a group as dropped out, or undo that. Admin only."""
     db = get_db()
     group = db.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
     if group is None:
         abort(404)
     raw = request.form.get("cp", "")
     cp = int(raw) if raw.isdigit() and int(raw) in CHECKPOINTS else None
-    if user["role"] == "staff" and (cp is None or cp != user["checkpoint"]):
-        abort(403)
+    if cp is None:
+        # Not given: the checkpoint the group was last seen at.
+        last = db.execute("SELECT checkpoint FROM checkins WHERE group_id = ? "
+                          "ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC LIMIT 1",
+                          (gid,)).fetchone()
+        cp = last[0] if last else None
     if request.form.get("undo"):
-        if user["role"] != "admin":
-            abort(403)
         db.execute("UPDATE groups SET retired_at = NULL, retired_cp = NULL WHERE id = ?", (gid,))
         audit(f"groep {group['name']} weer actief gemaakt")
         flash(f"Groep {group['name']} doet weer mee.", "ok")
