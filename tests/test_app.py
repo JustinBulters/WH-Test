@@ -670,3 +670,37 @@ def test_map_visibility_per_user(client):
                                      "active": "1", "can_map": "1"})
     login(client, "kijk")
     assert client.get("/kaart").status_code == 200
+
+
+def test_audit_log_records_and_filters_ip(client):
+    # A failed login is logged with the visitor's address; a faked X-Forwarded-For is ignored
+    # unless WH_PROXIES says a proxy sits in front.
+    client.post("/inloggen", data={"username": "admin", "password": "fout", "csrf": csrf(client)},
+                environ_base={"REMOTE_ADDR": "203.0.113.7"}, headers={"X-Forwarded-For": "1.2.3.4"})
+    t = login(client, "admin")
+    with wh.app.app_context():
+        row = wh.get_db().execute(
+            "SELECT ip FROM audit_log WHERE action = 'mislukte inlogpoging'").fetchone()
+        assert row["ip"] == "203.0.113.7"
+    page = client.get("/logboek?ip=203.0.113.").get_data(as_text=True)
+    assert "IP-adres" in page and "203.0.113.7" in page and "mislukte inlogpoging" in page
+    page = client.get("/logboek?ip=10.9.").get_data(as_text=True)
+    assert "mislukte inlogpoging" not in page
+    page = client.get("/logboek?ip=%25").get_data(as_text=True)  # % is not a wildcard
+    assert "mislukte inlogpoging" not in page
+
+
+def test_proxyfix_uses_forwarded_address(client):
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    original = wh.app.wsgi_app
+    wh.app.wsgi_app = ProxyFix(original, x_for=1, x_proto=1)
+    try:
+        client.post("/inloggen", data={"username": "admin", "password": "fout", "csrf": csrf(client)},
+                    environ_base={"REMOTE_ADDR": "172.17.0.1"},
+                    headers={"X-Forwarded-For": "1.2.3.4, 198.51.100.9"})
+    finally:
+        wh.app.wsgi_app = original
+    with wh.app.app_context():
+        row = wh.get_db().execute(
+            "SELECT ip FROM audit_log WHERE action = 'mislukte inlogpoging'").fetchone()
+        assert row["ip"] == "198.51.100.9"  # only the address the trusted proxy added

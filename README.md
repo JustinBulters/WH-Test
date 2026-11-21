@@ -54,7 +54,9 @@ WH_ADMIN_PASSWORD=your-password
 
 It is only used when the database is created for the first time. Change passwords later on the Profiel page.
 
-On a Synology NAS: in **Container Manager > Project > Create**, name the project `wh-hike`, pick a folder, and paste `compose.yaml`. Put the Synology reverse proxy with a Let's Encrypt certificate in front for HTTPS, then set `WH_HTTPS: "1"`.
+On a Synology NAS: in **Container Manager > Project > Create**, name the project `wh-hike`, pick a folder, and paste `compose.yaml`. Put a reverse proxy with HTTPS in front (HAProxy, or the Synology one), then set `WH_HTTPS: "1"`.
+
+**Real IP addresses in the logbook.** Behind a reverse proxy every visitor seems to come from the proxy. Add `option forwardfor` to the HAProxy backend (or defaults) and set `WH_PROXIES: "1"`: the site then logs the address HAProxy adds to `X-Forwarded-For`, and ignores anything a visitor puts in that header themselves. Only set it when the site is reached through the proxy alone; if port 9999 is also open to others, they could fake their address.
 
 ## Hosting on Render
 

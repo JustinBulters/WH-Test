@@ -21,6 +21,8 @@ services:
       # Web address printed in the QR codes on the group cards, e.g. https://hike.example.nl
       WH_BASE_URL: ${WH_BASE_URL:-}
       # WH_HTTPS: "1"                       # turn on once you only open the site via https://
+      # WH_PROXIES: "1"                     # turn on when the site sits behind one reverse proxy (HAProxy with
+      #                                       "option forwardfor"), so the logbook shows each visitor's real IP
     volumes:
       - ${WH_DIR:-/volume1/docker/wh-hike}/data:/data   # database and session key
     depends_on:
