@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block title %}Overzicht{% endblock %}
+{% block content %}
+<h1>Overzicht</h1>
+<p class="muted">{{ total }} groepen in totaal. Per checkpoint: nu aanwezig / vertrokken.</p>
+{% for day in (1, 2) %}
+<h2>Dag {{ day }}</h2>
+<div class="grid">
+  {% for cp, d in CHECKPOINTS.items() if d == day %}
+  <a class="card" href="{{ url_for('checkpoint', cp=cp) }}">
+    <b>CP {{ cp }}</b><br>
+    <span class="tag in">{{ stats[cp].in }} aanwezig</span>
+    <span class="tag out">{{ stats[cp].out }} vertrokken</span>
+  </a>
+  {% endfor %}
+</div>
+{% endfor %}
+{% endblock %}

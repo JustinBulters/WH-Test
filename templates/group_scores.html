@@ -1,0 +1,43 @@
+{% extends "base.html" %}{% block title %}{{ group.name }} · CP {{ cp }}{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('checkpoint', cp=cp) }}">← Checkpoint {{ cp }}</a></p>
+<h1>{{ group.name }} <span class="muted">· {{ group.category }} · CP {{ cp }}</span></h1>
+
+<fieldset>
+  <legend>In- en uitchecken</legend>
+  {% set back = url_for('checkpoint_group', cp=cp, gid=group.id) %}
+  <p>Ingecheckt: <b>{{ visit.checkin_at|localtime if visit else '–' }}</b> · Uitgecheckt: <b>{{ visit.checkout_at|localtime if visit and visit.checkout_at else '–' }}</b></p>
+  {% if can_edit %}
+    {% if not visit %}
+    <form class="inline" method="post" action="{{ url_for('checkpoint_stamp', cp=cp, gid=group.id, action='in') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}"><button class="big">Inchecken</button></form>
+    {% elif not visit.checkout_at %}
+    <form class="inline" method="post" action="{{ url_for('checkpoint_stamp', cp=cp, gid=group.id, action='uit') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}"><button class="big alt">Uitchecken</button></form>
+    {% endif %}
+    {% if visit and me.role == 'admin' %}
+    <form class="inline" method="post" action="{{ url_for('checkpoint_stamp', cp=cp, gid=group.id, action='herstel') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}"><button class="danger">Wissen</button></form>
+    {% endif %}
+  {% endif %}
+</fieldset>
+
+<form method="post">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="wrap"><table>
+<tr><th>Wandelaar</th><th>Quiz</th><th>Praktijk</th></tr>
+{% for h in hikers %}
+<tr>
+  <td><b>#{{ h.number }}</b> {{ h.name }}{% if h.comment %}<span class="note">{{ h.comment }}</span>{% endif %}</td>
+  {% for field in ('quiz', 'practical') %}
+  <td>
+    {% if can_edit %}
+    <select name="{{ field }}_{{ h.id }}"><option value="">–</option>{% for i in range(1, 11) %}<option {% if h[field] == i %}selected{% endif %}>{{ i }}</option>{% endfor %}</select>
+    {% else %}{{ h[field] or '–' }}{% endif %}
+  </td>
+  {% endfor %}
+</tr>
+{% else %}
+<tr><td colspan="3" class="muted">Geen wandelaars in deze groep.</td></tr>
+{% endfor %}
+</table></div>
+{% if can_edit and hikers %}<p><button class="big">Scores opslaan</button></p>{% endif %}
+</form>
+{% endblock %}

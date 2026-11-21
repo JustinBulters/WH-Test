@@ -1,0 +1,27 @@
+{% extends "base.html" %}{% block title %}Gebruikers{% endblock %}
+{% macro role_fields(u=None) %}
+  <label>Rol<select name="role">{% for r, label in ROLES.items() %}<option value="{{ r }}" {% if u and u.role == r %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Checkpoint (alleen post)<select name="checkpoint"><option value="">–</option>{% for cp in CHECKPOINTS %}<option {% if u and u.checkpoint == cp %}selected{% endif %}>{{ cp }}</option>{% endfor %}</select></label>
+{% endmacro %}
+{% block content %}
+<h1>Gebruikers</h1>
+<p class="muted">Beheerder: alles. Checkpointpost: alleen het eigen checkpoint inchecken, uitchecken en scoren. Meekijker: alles bekijken, niets wijzigen, geen logboek.</p>
+{% for u in users %}
+<fieldset><form method="post" class="row">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="update"><input type="hidden" name="user_id" value="{{ u.id }}">
+  <label>Gebruiker<b style="padding:.45rem 0">{{ u.username }}</b></label>
+  {{ role_fields(u) }}
+  <label>Nieuw wachtwoord<input name="password" type="password" autocomplete="new-password" placeholder="ongewijzigd"></label>
+  <label>Actief<input type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}></label>
+  <button>Opslaan</button>
+</form></fieldset>
+{% endfor %}
+<h2>Nieuwe gebruiker</h2>
+<fieldset><form method="post" class="row">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="create">
+  <label>Gebruikersnaam<input name="username" autocapitalize="none" required></label>
+  <label>Wachtwoord (min. 8)<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+  {{ role_fields() }}
+  <button>Aanmaken</button>
+</form></fieldset>
+{% endblock %}

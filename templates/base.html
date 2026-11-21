@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Hike{% endblock %} · WH</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <strong>WH Hike</strong>
+  {% if me %}
+    {% if me.role == 'staff' and me.checkpoint %}<a href="{{ url_for('checkpoint', cp=me.checkpoint) }}">Checkpoint {{ me.checkpoint }}</a>{% endif %}
+    {% if me.role in ('admin', 'viewer') %}
+      <a href="{{ url_for('index') }}">Overzicht</a>
+      <a href="{{ url_for('groups') }}">Groepen</a>
+      <a href="{{ url_for('results') }}">Uitslag</a>
+    {% endif %}
+    {% if me.role == 'admin' %}
+      <a href="{{ url_for('users') }}">Gebruikers</a>
+      <a href="{{ url_for('audit_log') }}">Logboek</a>
+    {% endif %}
+    <a href="{{ url_for('change_password') }}" title="Wachtwoord wijzigen">{{ me.username }}</a>
+    <form class="inline" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Uitloggen</button></form>
+  {% endif %}
+</header>
+<main>
+{% for cat, msg in get_flashed_messages(with_categories=true) %}<div class="flash {{ cat }}">{{ msg }}</div>{% endfor %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>
