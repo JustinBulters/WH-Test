@@ -30,6 +30,7 @@
       <a href="{{ url_for('groups') }}" {% if ep in ('groups', 'group_edit') %}class="on"{% endif %}>Groepen</a>
       <a href="{{ url_for('results') }}" {% if ep == 'results' %}class="on"{% endif %}>Uitslag</a>
     {% endif %}
+    <a href="{{ url_for('map_view') }}" {% if ep == 'map_view' %}class="on"{% endif %}>Kaart</a>
     {% if me.role in ('admin', 'staff') %}
       <a href="{{ url_for('score_requests') }}" {% if ep in ('score_requests', 'score_request') %}class="on"{% endif %}>Verzoeken</a>
     {% endif %}

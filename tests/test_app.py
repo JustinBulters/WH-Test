@@ -471,3 +471,18 @@ def test_first_admin_becomes_superadmin_on_upgrade(tmp_path):
         wh.init_db()
         rows = wh.get_db().execute("SELECT username, is_super FROM users ORDER BY id").fetchall()
         assert [tuple(r) for r in rows] == [("post", 0), ("admin", 1), ("admin2", 0)]
+
+
+def test_map_place_and_remove_checkpoint(client):
+    t = login(client, "admin")
+    assert "leaflet.js" in client.get("/kaart").get_data(as_text=True)
+    r = client.post("/kaart", data={"csrf": t, "cp": "3", "lat": "52.1", "lng": "5.2", "ajax": "1"})
+    assert r.get_json() == {"ok": True}
+    assert '"lat": 52.1' in client.get("/kaart").get_data(as_text=True)
+    client.post("/kaart", data={"csrf": t, "cp": "3", "op": "remove"})
+    assert '"lat": 52.1' not in client.get("/kaart").get_data(as_text=True)
+    assert client.post("/kaart", data={"csrf": t, "cp": "99", "lat": "1", "lng": "1"}).status_code == 400
+    for user in ("post3", "kijk"):
+        t = login(client, user)
+        assert client.get("/kaart").status_code == 200
+        assert client.post("/kaart", data={"csrf": t, "cp": "3", "lat": "1", "lng": "1"}).status_code == 403

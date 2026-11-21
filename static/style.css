@@ -158,3 +158,13 @@ textarea{width:100%}
 .flash:not(.ok):not(.error){background:var(--amber);color:var(--amber-ink)}
 fieldset.danger-zone{border-color:var(--red)}
 fieldset.danger-zone legend{color:var(--red)}
+/* Map */
+.map{height:min(70vh,36rem);border-radius:14px;border:1px solid var(--line);box-shadow:var(--shadow);z-index:0}
+.map-tools{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center}
+.map-tools label{display:flex;align-items:center;gap:.5rem;font-weight:600}
+.pin{display:inline-flex;align-items:center;justify-content:center;width:.95rem;height:.95rem;border-radius:50%;background:#fff;border:2px solid #2e6b45;color:#2e6b45;font-weight:800;font-size:.8rem}
+.pin.big{width:40px;height:40px;border-width:3px;box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.pin.here{background:#fff3cd;border-color:#7a5a00;color:#7a5a00}
+.pin.done{background:#2e6b45;color:#fff}
+.leaflet-popup-content{font:14px/1.45 system-ui,sans-serif}
+.leaflet-popup-content button.small{min-height:0;padding:.3rem .6rem;font-size:.85rem;margin-top:.4rem}
