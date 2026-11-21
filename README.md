@@ -29,7 +29,14 @@ Settings via environment variables:
 - `WH_DATABASE`: path to the SQLite file (default `wh.sqlite3` next to `app.py`).
 - `WH_SECRET_KEY`: session secret. If unset, one is generated in `.secret_key`.
 
-For real use, run it behind HTTPS, for example with `gunicorn app:app` behind a reverse proxy.
+- `WH_ADMIN_PASSWORD`: password for the first admin. If unset, `init-db` generates one and prints it.
+
+## Hosting on Render
+
+`render.yaml` describes the live site for [Render](https://render.com): a web service in Frankfurt with a 1 GB disk for the database. Every push to `main` redeploys it automatically; the data on the disk is kept.
+
+1. In Render, choose **New > Blueprint** and pick this repository.
+2. Fill in `WH_ADMIN_PASSWORD` when asked. Log in as `admin` with that password.
 
 ## Tests
 

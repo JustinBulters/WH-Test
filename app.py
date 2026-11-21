@@ -44,7 +44,9 @@ def _secret_key():
 
 
 app.secret_key = _secret_key()
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                  # Render (and other HTTPS hosts) set RENDER; only send the cookie over HTTPS there.
+                  SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")))
 
 
 # ---------------------------------------------------------------- database
@@ -134,11 +136,15 @@ def init_db_command(admin):
     if db.execute("SELECT 1 FROM users WHERE role = 'admin'").fetchone():
         click.echo("Database bijgewerkt. Er bestaat al een beheerder.")
         return
-    password = secrets.token_urlsafe(9)
+    # On a hosting service, set WH_ADMIN_PASSWORD so the password is not printed in logs.
+    password = os.environ.get("WH_ADMIN_PASSWORD") or secrets.token_urlsafe(9)
     db.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
                (admin, generate_password_hash(password)))
     db.commit()
-    click.echo(f"Beheerder aangemaakt: {admin} / {password}")
+    if os.environ.get("WH_ADMIN_PASSWORD"):
+        click.echo(f"Beheerder aangemaakt: {admin} (wachtwoord uit WH_ADMIN_PASSWORD)")
+    else:
+        click.echo(f"Beheerder aangemaakt: {admin} / {password}")
     click.echo("Wijzig dit wachtwoord na de eerste keer inloggen.")
 
 

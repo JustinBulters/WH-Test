@@ -1,0 +1,26 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Every push to main redeploys the site automatically.
+services:
+  - type: web
+    name: wh-hike
+    runtime: python
+    region: frankfurt
+    plan: starter            # needed for a persistent disk, so data survives updates
+    branch: main
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: flask --app app init-db && gunicorn app:app --workers 2 --bind 0.0.0.0:$PORT
+    healthCheckPath: /inloggen
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.1"
+      - key: WH_DATABASE
+        value: /var/data/wh.sqlite3
+      - key: WH_SECRET_KEY
+        generateValue: true
+      - key: WH_ADMIN_PASSWORD
+        sync: false            # Render asks for this when you create the site
