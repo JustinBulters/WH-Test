@@ -305,7 +305,16 @@ def index():
             "SELECT checkpoint, SUM(checkin_at IS NOT NULL AND checkout_at IS NULL) AS present, "
             "SUM(checkout_at IS NOT NULL) AS done FROM checkins GROUP BY checkpoint"):
         stats[row["checkpoint"]] = {"in": row["present"], "out": row["done"]}
-    return render_template("index.html", stats=stats, total=total)
+    # Where is each group now: its most recent check-in or check-out.
+    where = db.execute(
+        "SELECT g.id, g.name, g.category, c.checkpoint, c.checkin_at, c.checkout_at, "
+        "(SELECT GROUP_CONCAT(h.number, ', ') FROM hikers h WHERE h.group_id = g.id) AS numbers "
+        "FROM groups g LEFT JOIN ("
+        "  SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id "
+        "    ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC) AS rn FROM checkins"
+        ") c ON c.group_id = g.id AND c.rn = 1 "
+        "ORDER BY g.category, g.name").fetchall()
+    return render_template("index.html", stats=stats, total=total, where=where)
 
 
 @app.route("/checkpoint/<int:cp>")

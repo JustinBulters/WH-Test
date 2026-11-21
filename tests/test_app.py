@@ -89,3 +89,13 @@ def test_admin_hiker_number_range(client):
 def test_localtime_filter():
     assert wh.localtime("2026-06-13T08:00:00+00:00", "%H:%M") == "10:00"  # summer, UTC+2
     assert wh.localtime("2026-11-21T08:00:00+00:00", "%H:%M") == "09:00"  # winter, UTC+1
+
+
+def test_where_is_each_group(client):
+    t = login(client, "admin")
+    assert "nog niet gestart" in client.get("/").get_data(as_text=True)
+    client.post("/checkpoint/1/groep/1/in", data={"csrf": t})
+    client.post("/checkpoint/1/groep/1/uit", data={"csrf": t})
+    assert "onderweg na CP 1" in client.get("/").get_data(as_text=True)
+    client.post("/checkpoint/2/groep/1/in", data={"csrf": t})
+    assert "op CP 2" in client.get("/").get_data(as_text=True)

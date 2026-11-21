@@ -6,6 +6,7 @@ Website for tracking hikers at checkpoints during a two-day hike. Lightweight on
 
 - **Checkpoints 1-12.** Checkpoints 1-7 are day 1 and 8-12 are day 2.
 - **Groups and hikers.** Hikers walk in groups of 2-3. Each hiker has a number (junioren 101-199, senioren 201-299, veteranen 301-399), a name and a comment field, for example for allergies. The number must fit the group's category.
+- **Where is each group now.** The overview page lists every group with its last checkpoint: at a checkpoint, on the way after one, or not started yet.
 - **Check-in and check-out** per group per checkpoint, stamped with the server time when the button is pressed. Times are stored in UTC and shown in Dutch time (Europe/Amsterdam).
 - **Scores.** Each group gets a quiz score and a practical score from 1 to 10 at each checkpoint. The results page ranks groups per category.
 - **Roles.**
