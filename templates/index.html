@@ -3,6 +3,17 @@
 {% block content %}
 <h1>Overzicht</h1>
 {% set action = url_for('lookup') %}{% set back = url_for('index') %}{% include "_lookup.html" %}
+{% if late %}
+<div class="panel late">
+  <h2>Te laat ({{ late|length }})</h2>
+  <ul class="people">
+  {% for x in late %}
+    <li><a href="{{ url_for('group_edit', gid=x.id) }}"><b>Groep {{ x.name }}</b></a> · {{ x.category|capitalize }}<br>
+      <span class="muted">CP {{ x.from }} → CP {{ x.to }}: al <b>{{ x.walking }} min</b> onderweg, verwacht {{ x.expected }} min{% if x.avg is not none %}, gemiddeld {{ x.avg }} min{% endif %}. Vertrokken {{ x.since|localtime('%H:%M') }}.</span></li>
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
 <h2>Waar is elke groep nu?</h2>
 <div class="wrap"><table>
 <tr><th>Groep</th><th>Wandelaars</th><th>Laatst gezien</th></tr>
