@@ -12,6 +12,7 @@
     {% if g.retired_at %}<span class="tag off">uitgevallen</span>
     {% elif g.checkout_at %}<span class="tag out">uit {{ g.checkout_at|localtime('%H:%M') }}</span>
     {% elif g.checkin_at %}<span class="tag in">in {{ g.checkin_at|localtime('%H:%M') }}</span>
+    {% elif g.id in late %}<span class="tag off">te laat</span><br><span class="muted">{{ late[g.id].walking }} min onderweg</span>
     {% else %}<span class="tag">nog niet</span>{% endif %}
   </td>
   <td>

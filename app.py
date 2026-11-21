@@ -34,6 +34,8 @@ CATEGORIES = {
 # How many checkpoints each of the two days has, unless an admin changed it.
 DEFAULT_PER_DAY = {1: 7, 2: 5}
 MAX_PER_DAY = 25
+# A group counts as late this many minutes after the expected walking time.
+LATE_GRACE = 30
 
 
 class _Checkpoints(Mapping):
@@ -606,6 +608,51 @@ def checkpoint_stats(db):
     return stats, len(furthest)
 
 
+def legs():
+    """Checkpoints that have a next checkpoint on the same day: cp -> next cp."""
+    return {cp: cp + 1 for cp, day in CHECKPOINTS.items() if CHECKPOINTS.get(cp + 1) == day}
+
+
+def leg_times(db):
+    """Per leg (from cp): expected minutes (set by an admin) and the real average so far."""
+    out = {cp: {"to": nxt, "expected": None, "avg": None, "count": 0} for cp, nxt in legs().items()}
+    for cp in out:
+        raw = get_setting(f"leg_{cp}", "")
+        out[cp]["expected"] = int(raw) if raw.isdigit() else None
+    walked = {}
+    for r in db.execute("SELECT a.checkpoint AS cp, a.checkout_at AS start, b.checkin_at AS end FROM checkins a "
+                        "JOIN checkins b ON b.group_id = a.group_id AND b.checkpoint = a.checkpoint + 1 "
+                        "WHERE a.checkout_at IS NOT NULL AND b.checkin_at IS NOT NULL"):
+        m = minutes_between(r["start"], r["end"])
+        if r["cp"] in out and m is not None and m >= 0:
+            walked.setdefault(r["cp"], []).append(m)
+    for cp, ms in walked.items():
+        out[cp]["avg"], out[cp]["count"] = round(sum(ms) / len(ms)), len(ms)
+    return out
+
+
+def late_groups(db):
+    """Groups that left a checkpoint and have been walking longer than expected + LATE_GRACE."""
+    times = leg_times(db)
+    now = datetime.now(timezone.utc)
+    late = []
+    for r in db.execute(
+            "SELECT g.id, g.name, g.category, c.checkpoint, c.checkout_at FROM groups g JOIN ("
+            "  SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id "
+            "    ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC) AS rn FROM checkins"
+            ") c ON c.group_id = g.id AND c.rn = 1 "
+            "WHERE g.retired_at IS NULL AND c.checkout_at IS NOT NULL"):
+        leg = times.get(r["checkpoint"])
+        if not leg or leg["expected"] is None:
+            continue
+        walking = round((now - datetime.fromisoformat(r["checkout_at"])).total_seconds() / 60)
+        if walking > leg["expected"] + LATE_GRACE:
+            late.append({"id": r["id"], "name": r["name"], "category": r["category"], "from": r["checkpoint"],
+                         "to": leg["to"], "since": r["checkout_at"], "walking": walking,
+                         "expected": leg["expected"], "avg": leg["avg"]})
+    return sorted(late, key=lambda x: x["walking"] - x["expected"], reverse=True)
+
+
 @app.route("/")
 @login_required()
 def index():
@@ -627,7 +674,8 @@ def index():
         "    ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC) AS rn FROM checkins"
         ") c ON c.group_id = g.id AND c.rn = 1 "
         "ORDER BY g.category, CAST(g.name AS INTEGER)").fetchall()
-    return render_template("index.html", stats=stats, total=total, active=active, where=where)
+    return render_template("index.html", stats=stats, total=total, active=active, where=where,
+                           late=late_groups(db), grace=LATE_GRACE)
 
 
 @app.route("/checkpoint/<int:cp>")
@@ -647,7 +695,8 @@ def checkpoint(cp):
         "(SELECT GROUP_CONCAT(h.name, ', ') FROM hikers h WHERE h.group_id = g.id) AS members "
         "FROM groups g LEFT JOIN checkins c ON c.group_id = g.id AND c.checkpoint = ? "
         "ORDER BY g.category, CAST(g.name AS INTEGER)", (cp,)).fetchall()
-    return render_template("checkpoint.html", cp=cp, groups=groups,
+    late = {x["id"]: x for x in late_groups(db) if x["to"] == cp}
+    return render_template("checkpoint.html", cp=cp, groups=groups, late=late,
                            can_edit=can_edit_checkpoint(cp))
 
 
@@ -1189,12 +1238,15 @@ def checkpoint_setup():
         for cp in range(1, MAX_PER_DAY * 2 + 1):
             name = request.form.get(f"name_{cp}", "").strip()[:40] if cp <= total else ""
             set_setting(db, f"cp_name_{cp}", name or None)
+            raw = request.form.get(f"leg_{cp}", "").strip() if cp < total else ""
+            set_setting(db, f"leg_{cp}", str(int(raw)) if raw.isdigit() and 0 < int(raw) <= 24 * 60 else None)
         db.execute("DELETE FROM checkpoint_locations WHERE checkpoint > ?", (total,))
         db.commit()
         audit(f"checkpoints ingesteld: dag 1 = {counts[0]}, dag 2 = {counts[1]}")
         flash("Checkpoints opgeslagen.", "ok")
         return redirect(url_for("checkpoint_setup"))
-    return render_template("checkpoints.html", per_day=checkpoints_per_day(), max_per_day=MAX_PER_DAY)
+    return render_template("checkpoints.html", per_day=checkpoints_per_day(), max_per_day=MAX_PER_DAY,
+                           legs=leg_times(db), grace=LATE_GRACE)
 
 
 @app.route("/kaart", methods=["GET", "POST"])

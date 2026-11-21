@@ -537,3 +537,33 @@ def test_merge_groups(client):
     assert "heeft nu 4 wandelaars" in r.get_data(as_text=True)
     login(client, "kijk")
     assert client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1"}).status_code in (400, 403)
+
+
+def test_leg_times_and_late_groups(client):
+    from datetime import datetime, timedelta, timezone
+    t = login(client, "admin")
+    client.post("/groepen", data={"csrf": t, "category": "junioren", "hiker_name": ["Cees", "", ""],
+                                  "hiker_comment": ["", "", ""]})
+    now = datetime.now(timezone.utc)
+    ago = lambda m: (now - timedelta(minutes=m)).isoformat(timespec="seconds")
+    with wh.app.app_context():
+        db = wh.get_db()
+        # Group 101 walked CP1 -> CP2 in 60 min and left CP2 100 minutes ago.
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (1, 1, ?, ?)",
+                   (ago(200), ago(190)))
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (1, 2, ?, ?)",
+                   (ago(130), ago(100)))
+        # Group 102 walked CP1 -> CP2 in 80 min and is still at CP2.
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (2, 1, ?, ?)",
+                   (ago(200), ago(180)))
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at) VALUES (2, 2, ?)", (ago(100),))
+        db.commit()
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_1": "75", "leg_2": "60"})
+    page = client.get("/checkpoints").get_data(as_text=True)
+    assert 'value="75"' in page and "gemiddeld 70 min (2 groepen)" in page
+    page = client.get("/").get_data(as_text=True)
+    # 100 min underway > 60 + 30 grace.
+    assert "Te laat (1)" in page and "al <b>100 min</b> onderweg, verwacht 60 min" in page
+    assert "te laat" in client.get("/checkpoint/3").get_data(as_text=True)
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_1": "75", "leg_2": "90"})
+    assert "Te laat" not in client.get("/").get_data(as_text=True)

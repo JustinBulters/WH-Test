@@ -2,6 +2,7 @@
 {% block content %}
 <h1>Checkpoints</h1>
 <p class="muted">De hike heeft altijd twee dagen. Kies hoeveel checkpoints elke dag heeft; de nummers lopen door (dag 2 begint na de laatste CP van dag 1). Een naam is optioneel.</p>
+<p class="muted">Vul per looproute de verwachte looptijd in <b>minuten</b> in (anderhalf uur = 90). Een groep die {{ grace }} minuten langer onderweg is dan verwacht, komt als "te laat" op het overzicht. Ernaast zie je hoe lang groepen er gemiddeld echt over deden.</p>
 <form method="post">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <fieldset>
@@ -18,6 +19,13 @@
     <legend>Dag {{ day }}</legend>
     {% for cp, d in CHECKPOINTS.items() if d == day %}
     <div class="row cp-name"><label>CP {{ cp }}<input name="name_{{ cp }}" value="{{ cp_names().get(cp, '') }}" maxlength="40" placeholder="bv. Molen, Kerk, Bosrand"></label></div>
+    {% if cp in legs %}{% set l = legs[cp] %}
+    <div class="leg">
+      <span>↓ naar CP {{ l.to }}</span>
+      <label><input name="leg_{{ cp }}" value="{{ l.expected or '' }}" inputmode="numeric" pattern="[0-9]*" placeholder="–" aria-label="Verwachte looptijd CP {{ cp }} naar CP {{ l.to }} in minuten"> min verwacht</label>
+      <span class="muted">{% if l.avg is not none %}gemiddeld {{ l.avg }} min ({{ l.count }} groep{{ 'en' if l.count != 1 }}){% else %}nog geen looptijden{% endif %}</span>
+    </div>
+    {% endif %}
     {% endfor %}
   </fieldset>
   {% endfor %}
