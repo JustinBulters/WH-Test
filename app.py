@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'staff', 'viewer')),
     checkpoint INTEGER,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    theme TEXT NOT NULL DEFAULT 'auto'
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -125,6 +126,10 @@ def close_db(exc):
 def init_db():
     db = get_db()
     db.executescript(SCHEMA)
+    # Small migrations for databases created by an older version.
+    cols = {r["name"] for r in db.execute("PRAGMA table_info(users)")}
+    if "theme" not in cols:
+        db.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'auto'")
     db.commit()
 
 
@@ -274,25 +279,41 @@ def logout():
     return redirect(url_for("login"))
 
 
-@app.route("/wachtwoord", methods=["GET", "POST"])
+THEMES = {"auto": "Zoals mijn apparaat", "light": "Licht", "dark": "Donker"}
+
+
+@app.route("/profiel", methods=["GET", "POST"])
 @login_required()
-def change_password():
+def profile():
+    user = current_user()
+    db = get_db()
     if request.method == "POST":
-        user = current_user()
-        new = request.form.get("new", "")
-        if not check_password_hash(user["password_hash"], request.form.get("old", "")):
-            flash("Huidig wachtwoord klopt niet.", "error")
-        elif len(new) < 8:
-            flash("Nieuw wachtwoord moet minstens 8 tekens hebben.", "error")
+        if request.form.get("op") == "theme":
+            theme = request.form.get("theme")
+            if theme in THEMES:
+                db.execute("UPDATE users SET theme = ? WHERE id = ?", (theme, user["id"]))
+                db.commit()
+                audit(f"weergave ingesteld op {theme}")
+                flash("Weergave opgeslagen.", "ok")
         else:
-            db = get_db()
-            db.execute("UPDATE users SET password_hash = ? WHERE id = ?",
-                       (generate_password_hash(new), user["id"]))
-            db.commit()
-            audit("eigen wachtwoord gewijzigd")
-            flash("Wachtwoord gewijzigd.", "ok")
-            return redirect(url_for("index"))
-    return render_template("password.html")
+            new = request.form.get("new", "")
+            if not check_password_hash(user["password_hash"], request.form.get("old", "")):
+                flash("Huidig wachtwoord klopt niet.", "error")
+            elif len(new) < 8:
+                flash("Nieuw wachtwoord moet minstens 8 tekens hebben.", "error")
+            else:
+                db.execute("UPDATE users SET password_hash = ? WHERE id = ?",
+                           (generate_password_hash(new), user["id"]))
+                db.commit()
+                audit("eigen wachtwoord gewijzigd")
+                flash("Wachtwoord gewijzigd.", "ok")
+        return redirect(url_for("profile"))
+    return render_template("profile.html", THEMES=THEMES)
+
+
+@app.route("/wachtwoord")
+def change_password():
+    return redirect(url_for("profile"))
 
 
 # ---------------------------------------------------------------- overview

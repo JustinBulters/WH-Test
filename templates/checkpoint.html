@@ -1,11 +1,11 @@
 {% extends "base.html" %}{% block title %}CP {{ cp }}{% endblock %}
 {% block content %}
-<h1>Checkpoint {{ cp }} <span class="muted">· dag {{ CHECKPOINTS[cp] }}</span></h1>
+<h1>Checkpoint {{ cp }} <small>· dag {{ CHECKPOINTS[cp] }}</small></h1>
 <div class="wrap"><table>
 <tr><th>Groep</th><th>Nummers</th><th>Status</th><th></th></tr>
 {% for g in groups %}
 <tr>
-  <td><a href="{{ url_for('checkpoint_group', cp=cp, gid=g.id) }}">{{ g.name }}</a><br><span class="muted">{{ g.category }}</span></td>
+  <td><a href="{{ url_for('checkpoint_group', cp=cp, gid=g.id) }}">{{ g.name }}</a><br><span class="muted">{{ g.category|capitalize }}</span></td>
   <td>{{ g.numbers or '–' }}</td>
   <td>
     {% if g.checkout_at %}<span class="tag out">uit {{ g.checkout_at|localtime('%H:%M') }}</span>

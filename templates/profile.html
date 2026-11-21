@@ -1,0 +1,29 @@
+{% extends "base.html" %}{% block title %}Profiel{% endblock %}
+{% block content %}
+<h1>Profiel <small>· {{ me.username }} · {{ ROLES[me.role] }}{% if me.checkpoint %} CP {{ me.checkpoint }}{% endif %}</small></h1>
+
+<fieldset>
+  <legend>Weergave</legend>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="theme">
+    <div class="choice">
+      {% for key, label in THEMES.items() %}
+      <label><input type="radio" name="theme" value="{{ key }}" {% if me.theme == key %}checked{% endif %}> {{ label }}</label>
+      {% endfor %}
+    </div>
+    <div class="actions"><button>Opslaan</button></div>
+  </form>
+</fieldset>
+
+<fieldset>
+  <legend>Wachtwoord wijzigen</legend>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="password">
+    <div class="row">
+      <label>Huidig wachtwoord<input name="old" type="password" autocomplete="current-password" required></label>
+      <label>Nieuw wachtwoord (min. 8 tekens)<input name="new" type="password" autocomplete="new-password" minlength="8" required></label>
+    </div>
+    <div class="actions"><button>Wachtwoord opslaan</button></div>
+  </form>
+</fieldset>
+{% endblock %}

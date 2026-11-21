@@ -30,7 +30,7 @@ def login(c, user):
     t = csrf(c)
     r = c.post("/inloggen", data={"username": user, "password": "geheim123", "csrf": t})
     assert r.status_code == 302
-    return csrf(c, "/wachtwoord")
+    return csrf(c, "/profiel")
 
 
 def test_requires_login(client):
@@ -99,3 +99,27 @@ def test_where_is_each_group(client):
     assert "onderweg na CP 1" in client.get("/").get_data(as_text=True)
     client.post("/checkpoint/2/groep/1/in", data={"csrf": t})
     assert "op CP 2" in client.get("/").get_data(as_text=True)
+
+
+def test_theme_setting(client):
+    t = login(client, "kijk")
+    assert 'data-theme="auto"' in client.get("/profiel").get_data(as_text=True)
+    client.post("/profiel", data={"csrf": t, "op": "theme", "theme": "dark"})
+    assert 'data-theme="dark"' in client.get("/").get_data(as_text=True)
+    client.post("/profiel", data={"csrf": t, "op": "theme", "theme": "paars"})
+    assert 'data-theme="dark"' in client.get("/").get_data(as_text=True)
+
+
+def test_old_database_gets_theme_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, "
+                "password_hash TEXT NOT NULL, role TEXT NOT NULL, checkpoint INTEGER, "
+                "active INTEGER NOT NULL DEFAULT 1)")
+    con.commit(); con.close()
+    wh.app.config.update(DATABASE=str(path))
+    with wh.app.app_context():
+        wh.init_db()
+        cols = [r[1] for r in wh.get_db().execute("PRAGMA table_info(users)")]
+    assert "theme" in cols

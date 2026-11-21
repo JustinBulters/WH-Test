@@ -6,7 +6,7 @@
 <tr><th>Groep</th><th>Nummers</th><th>Laatst gezien</th></tr>
 {% for g in where %}
 <tr>
-  <td>{{ g.name }}<br><span class="muted">{{ g.category }}</span></td>
+  <td>{{ g.name }}<br><span class="muted">{{ g.category|capitalize }}</span></td>
   <td>{{ g.numbers or '–' }}</td>
   <td>
     {% if g.checkout_at %}<span class="tag out">onderweg na CP {{ g.checkpoint }}</span><br><span class="muted">vertrokken {{ g.checkout_at|localtime }}</span>
@@ -24,7 +24,7 @@
 <div class="grid">
   {% for cp, d in CHECKPOINTS.items() if d == day %}
   <a class="card" href="{{ url_for('checkpoint', cp=cp) }}">
-    <b>CP {{ cp }}</b><br>
+    <b>CP {{ cp }}</b>
     <span class="tag in">{{ stats[cp].in }} aanwezig</span>
     <span class="tag out">{{ stats[cp].out }} vertrokken</span>
   </a>
