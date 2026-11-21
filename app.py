@@ -35,7 +35,8 @@ app.config["DATABASE"] = os.environ.get("WH_DATABASE", os.path.join(BASE_DIR, "w
 def _secret_key():
     if os.environ.get("WH_SECRET_KEY"):
         return os.environ["WH_SECRET_KEY"]
-    path = os.path.join(BASE_DIR, ".secret_key")
+    # Keep the generated key next to the database, so it survives container updates.
+    path = os.path.join(os.path.dirname(app.config["DATABASE"]), ".secret_key")
     if not os.path.exists(path):
         with open(path, "w") as f:
             f.write(secrets.token_hex(32))
@@ -45,8 +46,8 @@ def _secret_key():
 
 app.secret_key = _secret_key()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
-                  # Render (and other HTTPS hosts) set RENDER; only send the cookie over HTTPS there.
-                  SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")))
+                  # Behind HTTPS (Render sets RENDER; elsewhere set WH_HTTPS=1) only send the cookie over HTTPS.
+                  SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER") or os.environ.get("WH_HTTPS")))
 
 
 # ---------------------------------------------------------------- database
