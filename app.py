@@ -20,6 +20,7 @@ from flask import (Flask, abort, flash, g, jsonify, redirect, render_template, r
 from markupsafe import Markup
 from openpyxl import Workbook
 from openpyxl.styles import Font
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +64,12 @@ CHECKPOINTS = _Checkpoints()
 ROLES = {"admin": "Beheerder", "staff": "Checkpointpost", "viewer": "Meekijker"}
 
 app = Flask(__name__)
+# Behind a reverse proxy (e.g. the Synology one) every visitor seems to come from the proxy.
+# WH_PROXIES=1 tells the site to trust one proxy's X-Forwarded-For header for the real address.
+# Leave it unset when visitors reach the site directly, or anyone could fake their address.
+_proxies = int(os.environ.get("WH_PROXIES", "0") or 0)
+if _proxies > 0:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_proxies, x_proto=_proxies)
 app.config["DATABASE"] = os.environ.get("WH_DATABASE", os.path.join(BASE_DIR, "wh.sqlite3"))
 
 
@@ -339,7 +346,7 @@ def write_audit(response):
         (now_utc(), user["id"] if user else None,
          user["username"] if user else g.get("audit_username"),
          request.method, request.full_path.rstrip("?"), action or "bekeken",
-         request.headers.get("X-Forwarded-For", request.remote_addr)))
+         request.remote_addr))
     db.commit()
     return response
 
@@ -1489,17 +1496,23 @@ def users():
 def audit_log():
     db = get_db()
     who = request.args.get("wie", "").strip()
+    ip = request.args.get("ip", "").strip()
     page = max(int(request.args.get("p", "1") or 1), 1)
     per = 100
-    where, params = "", []
+    conds, params = [], []
     if who:
-        where, params = "WHERE username = ?", [who]
+        conds.append("username = ?")
+        params.append(who)
+    if ip:  # the start of an address is enough, e.g. 192.168.1.
+        conds.append("ip LIKE ? ESCAPE '\\'")
+        params.append(ip.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
     rows = db.execute(f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
                       params + [per + 1, (page - 1) * per]).fetchall()
     names = [r[0] for r in db.execute(
         "SELECT DISTINCT username FROM audit_log WHERE username IS NOT NULL ORDER BY username")]
     return render_template("audit.html", rows=rows[:per], more=len(rows) > per,
-                           page=page, who=who, names=names)
+                           page=page, who=who, ip=ip, names=names)
 
 
 @app.errorhandler(403)

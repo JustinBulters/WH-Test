@@ -3,13 +3,17 @@
 <h1>Logboek</h1>
 <form method="get" class="row">
   <label>Gebruiker<select name="wie"><option value="">iedereen</option>{% for n in names %}<option {% if n == who %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+  <label>IP-adres<input name="ip" value="{{ ip }}" placeholder="bijv. 192.168.1." inputmode="decimal"></label>
   <button>Filter</button>
+  {% if who or ip %}<a href="{{ url_for('audit_log') }}">Wis filter</a>{% endif %}
 </form>
 <div class="wrap"><table>
-<tr><th>Tijd</th><th>Gebruiker</th><th>Actie</th><th>Pagina</th></tr>
+<tr><th>Tijd</th><th>Gebruiker</th><th>Actie</th><th>IP-adres</th><th>Pagina</th></tr>
 {% for r in rows %}
-<tr><td>{{ r.at|localtime('%d-%m %H:%M:%S') }}</td><td>{{ r.username or '–' }}</td><td>{{ r.action }}</td><td class="muted">{{ r.method }} {{ r.path }}</td></tr>
+<tr><td>{{ r.at|localtime('%d-%m %H:%M:%S') }}</td><td>{{ r.username or '–' }}</td><td>{{ r.action }}</td>
+<td>{% if r.ip %}<a href="{{ url_for('audit_log', wie=who or None, ip=r.ip) }}" title="Alleen dit adres tonen">{{ r.ip }}</a>{% else %}–{% endif %}</td>
+<td class="muted">{{ r.method }} {{ r.path }}</td></tr>
 {% endfor %}
 </table></div>
-<p>{% if page > 1 %}<a href="?wie={{ who }}&p={{ page - 1 }}">← Nieuwer</a>{% endif %} {% if more %}<a href="?wie={{ who }}&p={{ page + 1 }}">Ouder →</a>{% endif %}</p>
+<p>{% if page > 1 %}<a href="{{ url_for('audit_log', wie=who or None, ip=ip or None, p=page - 1) }}">← Nieuwer</a>{% endif %} {% if more %}<a href="{{ url_for('audit_log', wie=who or None, ip=ip or None, p=page + 1) }}">Ouder →</a>{% endif %}</p>
 {% endblock %}
