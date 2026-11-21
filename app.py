@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS users (
     checkpoint INTEGER,
     active INTEGER NOT NULL DEFAULT 1,
     theme TEXT NOT NULL DEFAULT 'auto',
-    is_super INTEGER NOT NULL DEFAULT 0  -- superadmin: an admin who may also change settings
+    is_super INTEGER NOT NULL DEFAULT 0,  -- superadmin: an admin who may also change settings
+    can_map INTEGER NOT NULL DEFAULT 1    -- may see the Kaart tab (set by a superadmin)
 );
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY,
@@ -202,6 +203,8 @@ def init_db():
     cols = {r["name"] for r in db.execute("PRAGMA table_info(users)")}
     if "theme" not in cols:
         db.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'auto'")
+    if "can_map" not in cols:
+        db.execute("ALTER TABLE users ADD COLUMN can_map INTEGER NOT NULL DEFAULT 1")
     if "is_super" not in cols:
         db.execute("ALTER TABLE users ADD COLUMN is_super INTEGER NOT NULL DEFAULT 0")
         # The first admin account becomes superadmin.
@@ -350,7 +353,7 @@ def inject_globals():
                                  (me["id"],)).fetchone()[0] if me else 0
     return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread, "last_note": last_note,
             "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", ""),
-            "role_label": role_label, "cp_label": cp_label, "cp_names": cp_names, "cp_details": cp_details,
+            "role_label": role_label, "can_see_map": can_see_map, "cp_label": cp_label, "cp_names": cp_names, "cp_details": cp_details,
             "day1_last": checkpoints_per_day()[0], "last_cp": max(CHECKPOINTS), "start_date": start_date() if me else None,
             "today": lambda: datetime.now(LOCAL_TZ).date()}
 
@@ -358,6 +361,10 @@ def inject_globals():
 def notify(db, user_ids, text, link):
     db.executemany("INSERT INTO notifications (user_id, at, text, link) VALUES (?, ?, ?, ?)",
                    [(uid, now_utc(), text, link) for uid in user_ids])
+
+
+def can_see_map(user):
+    return bool(user["is_super"] or user["can_map"])
 
 
 def role_label(user):
@@ -1337,6 +1344,8 @@ def checkpoint_setup():
 @login_required()
 def map_view():
     """OpenStreetMap with the checkpoints. Admins place a checkpoint by clicking or dragging."""
+    if not can_see_map(current_user()):
+        abort(403)
     db = get_db()
     if request.method == "POST":
         if current_user()["role"] != "admin":
@@ -1458,6 +1467,9 @@ def users():
                 else:
                     db.execute("UPDATE users SET role = ?, checkpoint = ?, active = ?, is_super = ? WHERE id = ?",
                                (role, cp if role == "staff" else None, active, int(make_super), uid))
+                    if me["is_super"]:
+                        db.execute("UPDATE users SET can_map = ? WHERE id = ?",
+                                   (1 if form.get("can_map") else 0, uid))
                     if form.get("password"):
                         if len(form["password"]) < 8:
                             flash("Wachtwoord moet minstens 8 tekens hebben.", "error")
@@ -1466,6 +1478,7 @@ def users():
                                        (generate_password_hash(form["password"]), uid))
                     db.commit()
                     audit(f"gebruiker {target['username']} gewijzigd: rol={'superadmin' if make_super else role} cp={cp} actief={active}"
+                          + (f" kaart={1 if form.get('can_map') else 0}" if me["is_super"] else "")
                           + (" + nieuw wachtwoord" if form.get("password") else ""))
                     flash("Gebruiker bijgewerkt.", "ok")
         return redirect(url_for("users"))
