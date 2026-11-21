@@ -633,3 +633,20 @@ def test_username_not_case_sensitive(client):
     assert "bestaat al" in r.get_data(as_text=True)
     with wh.app.app_context():
         assert wh.get_db().execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3
+
+
+def test_notification_poll(client):
+    login(client, "admin")
+    page = client.get("/").get_data(as_text=True)
+    assert 'data-last="0"' in page and "notify.js" in page
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "7", "practical_3": "6"})
+    client.post("/checkpoint/3/groep/1/wijziging", data={"csrf": t, "quiz_3": "8", "practical_3": "6", "reason": "fout"})
+    login(client, "admin")
+    d = client.get("/meldingen/nieuw?na=0").get_json()
+    assert d["unread"] == 1 and len(d["items"]) == 1 and "scorewijziging" in d["items"][0]["text"]
+    assert d["items"][0]["url"].startswith("/meldingen/")
+    assert client.get(f"/meldingen/nieuw?na={d['last']}").get_json()["items"] == []
+    # Polling is not written to the audit log.
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM audit_log WHERE path LIKE '/meldingen/nieuw%'").fetchone()[0] == 0
