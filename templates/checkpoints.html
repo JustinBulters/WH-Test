@@ -18,7 +18,13 @@
   <fieldset>
     <legend>Dag {{ day }}</legend>
     {% for cp, d in CHECKPOINTS.items() if d == day %}
-    <div class="row cp-name"><label>CP {{ cp }}<input name="name_{{ cp }}" value="{{ cp_names().get(cp, '') }}" maxlength="40" placeholder="bv. Molen, Kerk, Bosrand"></label></div>
+    <div class="cp-block">
+    <div class="row cp-name"><label>CP {{ cp }}<input name="name_{{ cp }}" value="{{ cp_names().get(cp, '') }}" maxlength="40" placeholder="Naam, bv. Molen"></label></div>
+    <div class="row cp-extra">
+      <label>Thema<input name="theme_{{ cp }}" value="{{ cp_details(cp).get('theme', '') }}" maxlength="200" placeholder="bv. Eerste hulp"></label>
+      <label>Bemanning<input name="crew_{{ cp }}" value="{{ cp_details(cp).get('crew', '') }}" maxlength="500" placeholder="bv. Sanne en Mark"></label>
+    </div>
+    </div>
     {% if cp in legs %}{% set l = legs[cp] %}
     <div class="leg">
       <span>↓ naar CP {{ l.to }}</span>

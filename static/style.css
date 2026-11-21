@@ -179,3 +179,10 @@ fieldset.danger-zone legend{color:var(--red)}
 .panel.late h2{margin:0 0 .25rem;color:var(--red)}
 .panel.late ul.people li{border-color:rgba(194,65,59,.2)}
 .flash.offline{background:var(--amber);color:var(--amber-ink)}
+.cp-block{padding:.4rem 0 .6rem;border-bottom:1px solid var(--line)}
+.cp-block:last-of-type{border-bottom:0}
+.row.cp-extra{margin:.2rem 0 0 2.6rem}
+.row.cp-extra label{flex:1 1 12rem}
+.row.cp-extra input{width:100%}
+.panel.cp-info{display:flex;flex-wrap:wrap;gap:.5rem 2rem}
+.panel.cp-info div{display:flex;flex-direction:column}
