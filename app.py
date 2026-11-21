@@ -323,7 +323,7 @@ def csrf_protect():
 
 @app.after_request
 def write_audit(response):
-    if request.endpoint in ("static", "service_worker"):
+    if request.endpoint in ("static", "service_worker", "notifications_poll"):
         return response
     user = current_user()  # cached in g, so still known right after logout
     action = g.get("audit_action")
@@ -346,7 +346,9 @@ def inject_globals():
     me = current_user()
     unread = get_db().execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
                               (me["id"],)).fetchone()[0] if me else 0
-    return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread,
+    last_note = get_db().execute("SELECT COALESCE(MAX(id), 0) FROM notifications WHERE user_id = ?",
+                                 (me["id"],)).fetchone()[0] if me else 0
+    return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread, "last_note": last_note,
             "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", ""),
             "role_label": role_label, "cp_label": cp_label, "cp_names": cp_names, "cp_details": cp_details,
             "day1_last": checkpoints_per_day()[0], "last_cp": max(CHECKPOINTS), "start_date": start_date() if me else None,
@@ -845,6 +847,26 @@ def notifications():
     rows = get_db().execute("SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 100",
                             (current_user()["id"],)).fetchall()
     return render_template("notifications.html", rows=rows)
+
+
+@app.route("/meldingen/nieuw")
+@login_required()
+def notifications_poll():
+    """Small JSON for the pop-up: unread notifications newer than ?na=<id>, and the unread count."""
+    after = request.args.get("na", "0")
+    after = int(after) if after.isdigit() else 0
+    db = get_db()
+    uid = current_user()["id"]
+    rows = db.execute("SELECT id, text FROM notifications WHERE user_id = ? AND read_at IS NULL AND id > ? "
+                      "ORDER BY id LIMIT 5", (uid, after)).fetchall()
+    unread = db.execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
+                        (uid,)).fetchone()[0]
+    last = db.execute("SELECT COALESCE(MAX(id), 0) FROM notifications WHERE user_id = ?", (uid,)).fetchone()[0]
+    resp = jsonify(unread=unread, last=last,
+                   items=[{"id": r["id"], "text": r["text"], "url": url_for("notification_open", nid=r["id"])}
+                          for r in rows])
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/meldingen/<int:nid>")
