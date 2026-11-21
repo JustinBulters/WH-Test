@@ -5,6 +5,7 @@ name: wh-hike
 services:
   web:
     image: ghcr.io/justinbulters/wh-test:latest
+    pull_policy: always                     # building the project always fetches the newest version
     restart: unless-stopped
     ports:
       - "8080:8000"                         # NAS port 8080 -> site. Change 8080 if it is taken.
@@ -14,7 +15,8 @@ services:
     volumes:
       - data:/data                          # database and session key, kept across updates
 
-  # Every 5 minutes: fetch a newer image from GitHub, and restart the site only if there is one.
+  # Checks GitHub for a newer version right away and then every 2 minutes, and restarts
+  # the site only when there is one. Its Log tab in Container Manager shows each check.
   updater:
     image: docker:27-cli
     restart: unless-stopped
@@ -26,9 +28,10 @@ services:
       - -c
       - >-
         while true; do
-        sleep 300;
-        docker compose -p wh-hike --project-directory /compose pull --quiet web &&
+        echo "$$(date '+%F %T') controleren op nieuwe versie";
+        docker compose -p wh-hike --project-directory /compose pull web &&
         docker compose -p wh-hike --project-directory /compose up -d --no-deps web;
+        sleep 120;
         done
 
 volumes:
