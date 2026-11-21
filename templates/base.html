@@ -16,6 +16,7 @@
     <a class="brand" href="{{ url_for('index') }}"><i></i>WH Hike</a>
     {% if me %}
     <div class="me">
+      <a class="bell{% if ep in ('notifications',) %} on{% endif %}" href="{{ url_for('notifications') }}" aria-label="Meldingen{% if unread %}, {{ unread }} nieuw{% endif %}"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3a1.5 1.5 0 0 0-3 0v1.16A7 7 0 0 0 5 11v5l-2 2v1h18v-1Z"/></svg>{% if unread %}<span class="badge">{{ unread }}</span>{% endif %}</a>
       <a href="{{ url_for('profile') }}" {% if ep == 'profile' %}class="on"{% endif %}>{{ me.username }}</a>
       <form class="inline" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost">Uitloggen</button></form>
     </div>
@@ -28,6 +29,9 @@
       <a href="{{ url_for('index') }}" {% if ep == 'index' %}class="on"{% endif %}>Overzicht</a>
       <a href="{{ url_for('groups') }}" {% if ep in ('groups', 'group_edit') %}class="on"{% endif %}>Groepen</a>
       <a href="{{ url_for('results') }}" {% if ep == 'results' %}class="on"{% endif %}>Uitslag</a>
+    {% endif %}
+    {% if me.role in ('admin', 'staff') %}
+      <a href="{{ url_for('score_requests') }}" {% if ep in ('score_requests', 'score_request') %}class="on"{% endif %}>Verzoeken</a>
     {% endif %}
     {% if me.role == 'admin' %}
       <a href="{{ url_for('users') }}" {% if ep == 'users' %}class="on"{% endif %}>Gebruikers</a>

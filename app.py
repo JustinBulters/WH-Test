@@ -113,6 +113,31 @@ CREATE TABLE IF NOT EXISTS audit_log (
     ip TEXT
 );
 CREATE INDEX IF NOT EXISTS audit_at ON audit_log(at);
+-- Checkpoint staff enter a score once; changing it needs an admin's approval.
+CREATE TABLE IF NOT EXISTS score_requests (
+    id INTEGER PRIMARY KEY,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    checkpoint INTEGER NOT NULL,
+    old_quiz INTEGER, old_practical INTEGER,
+    quiz INTEGER, practical INTEGER,
+    reason TEXT NOT NULL,
+    requested_by INTEGER REFERENCES users(id),
+    requested_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'approved', 'declined')),
+    decided_by INTEGER REFERENCES users(id),
+    decided_at TEXT,
+    decision_note TEXT NOT NULL DEFAULT ''
+);
+-- Messages shown inside the site (the bell in the header).
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    at TEXT NOT NULL,
+    text TEXT NOT NULL,
+    link TEXT NOT NULL,
+    read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at);
 """
 
 
@@ -263,8 +288,16 @@ def write_audit(response):
 
 @app.context_processor
 def inject_globals():
-    return {"me": current_user(), "ROLES": ROLES, "CATEGORIES": CATEGORIES,
+    me = current_user()
+    unread = get_db().execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
+                              (me["id"],)).fetchone()[0] if me else 0
+    return {"me": me, "ROLES": ROLES, "CATEGORIES": CATEGORIES, "unread": unread,
             "CHECKPOINTS": CHECKPOINTS, "csrf": session.get("csrf", "")}
+
+
+def notify(db, user_ids, text, link):
+    db.executemany("INSERT INTO notifications (user_id, at, text, link) VALUES (?, ?, ?, ?)",
+                   [(uid, now_utc(), text, link) for uid in user_ids])
 
 
 def login_required(*roles):
@@ -408,17 +441,29 @@ def group_progress(db, group):
     return rows
 
 
-def save_group_scores(db, group, cps):
-    """Store quiz/practical from the form for the given checkpoints; returns changes for the log."""
+def form_scores(cp):
+    vals = []
+    for field in ("quiz", "practical"):
+        raw = request.form.get(f"{field}_{cp}", "")
+        vals.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None)
+    return vals
+
+
+def save_group_scores(db, group, cps, write_once=False):
+    """Store quiz/practical from the form for the given checkpoints; returns changes for the log.
+
+    With write_once (checkpoint staff), a score that is already filled in is kept:
+    changing it goes through a change request instead.
+    """
     changed = []
     for cp in cps:
-        vals = []
-        for field in ("quiz", "practical"):
-            raw = request.form.get(f"{field}_{cp}", "")
-            vals.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None)
+        vals = form_scores(cp)
         old = db.execute("SELECT quiz, practical FROM scores WHERE group_id = ? AND checkpoint = ?",
                          (group["id"], cp)).fetchone()
-        if list(old or (None, None)) == vals:
+        old = list(old or (None, None))
+        if write_once:
+            vals = [o if o is not None else v for o, v in zip(old, vals)]
+        if old == vals:
             continue
         db.execute(
             "INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at, updated_by) "
@@ -505,16 +550,147 @@ def checkpoint_group(cp, gid):
 
     if request.method == "POST":
         check_cp(cp, edit=True)
-        changed = save_group_scores(db, group, [cp])
+        changed = save_group_scores(db, group, [cp], write_once=current_user()["role"] != "admin")
         audit(f"scores groep {group['name']}: " + ("; ".join(changed) or "geen wijziging"))
         flash("Scores opgeslagen.", "ok")
         return redirect(url_for("checkpoint_group", cp=cp, gid=gid))
 
     visit = db.execute("SELECT * FROM checkins WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
-    return render_template("group_scores.html", cp=cp, group=group, hikers=hikers, score=score,
+    pending = db.execute("SELECT * FROM score_requests WHERE group_id = ? AND checkpoint = ? "
+                         "AND status = 'open'", (gid, cp)).fetchone()
+    return render_template("group_scores.html", pending=pending, cp=cp, group=group, hikers=hikers, score=score,
                            progress=group_progress(db, group),
                            visit=visit, can_edit=can_edit_checkpoint(cp))
+
+
+@app.route("/checkpoint/<int:cp>/groep/<int:gid>/wijziging", methods=["POST"])
+@login_required("staff")
+def score_request_new(cp, gid):
+    """Staff ask an admin to change a score that was already entered."""
+    check_cp(cp, edit=True)
+    db = get_db()
+    group = db.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
+    if group is None:
+        abort(404)
+    back = url_for("checkpoint_group", cp=cp, gid=gid)
+    old = db.execute("SELECT quiz, practical FROM scores WHERE group_id = ? AND checkpoint = ?",
+                     (gid, cp)).fetchone()
+    old = list(old or (None, None))
+    new = form_scores(cp)
+    reason = request.form.get("reason", "").strip()[:500]
+    if db.execute("SELECT 1 FROM score_requests WHERE group_id = ? AND checkpoint = ? AND status = 'open'",
+                  (gid, cp)).fetchone():
+        flash("Er staat al een wijzigingsverzoek open voor deze groep.", "error")
+    elif not reason:
+        flash("Vul een reden in voor de wijziging.", "error")
+    elif new == old:
+        flash("Er is niets gewijzigd.", "error")
+    else:
+        me = current_user()
+        cur = db.execute(
+            "INSERT INTO score_requests (group_id, checkpoint, old_quiz, old_practical, quiz, practical, "
+            "reason, requested_by, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (gid, cp, old[0], old[1], new[0], new[1], reason, me["id"], now_utc()))
+        admins = [r[0] for r in db.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1")]
+        notify(db, admins, f"{me['username']} vraagt een scorewijziging voor groep {group['name']} op CP {cp}",
+               url_for("score_request", rid=cur.lastrowid))
+        db.commit()
+        audit(f"wijzigingsverzoek scores groep {group['name']} CP{cp}: {old} -> {new}, reden: {reason}")
+        flash("Wijzigingsverzoek verstuurd. Een beheerder keurt het goed of af.", "ok")
+    return redirect(back)
+
+
+@app.route("/verzoeken")
+@login_required("admin", "staff")
+def score_requests():
+    db = get_db()
+    me = current_user()
+    where, params = ("", []) if me["role"] == "admin" else ("WHERE r.requested_by = ?", [me["id"]])
+    rows = db.execute(
+        "SELECT r.*, g.name AS group_name, u.username AS requester FROM score_requests r "
+        "JOIN groups g ON g.id = r.group_id LEFT JOIN users u ON u.id = r.requested_by "
+        f"{where} ORDER BY r.status != 'open', r.id DESC LIMIT 200", params).fetchall()
+    return render_template("requests.html", rows=rows)
+
+
+@app.route("/verzoeken/<int:rid>", methods=["GET", "POST"])
+@login_required("admin", "staff")
+def score_request(rid):
+    db = get_db()
+    me = current_user()
+    req = db.execute(
+        "SELECT r.*, g.name AS group_name, g.category, u.username AS requester, d.username AS decider "
+        "FROM score_requests r JOIN groups g ON g.id = r.group_id "
+        "LEFT JOIN users u ON u.id = r.requested_by LEFT JOIN users d ON d.id = r.decided_by "
+        "WHERE r.id = ?", (rid,)).fetchone()
+    if req is None:
+        abort(404)
+    if me["role"] != "admin" and req["requested_by"] != me["id"]:
+        abort(403)
+    if request.method == "POST":
+        if me["role"] != "admin":
+            abort(403)
+        decision = request.form.get("decision")
+        note = request.form.get("note", "").strip()[:500]
+        if req["status"] != "open":
+            flash("Over dit verzoek is al beslist.", "error")
+        elif decision in ("approved", "declined"):
+            db.execute("UPDATE score_requests SET status = ?, decided_by = ?, decided_at = ?, "
+                       "decision_note = ? WHERE id = ?", (decision, me["id"], now_utc(), note, rid))
+            if decision == "approved":
+                db.execute(
+                    "INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at, updated_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (group_id, checkpoint) DO UPDATE SET "
+                    "quiz = excluded.quiz, practical = excluded.practical, "
+                    "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+                    (req["group_id"], req["checkpoint"], req["quiz"], req["practical"], now_utc(), me["id"]))
+            word = "goedgekeurd" if decision == "approved" else "afgewezen"
+            if req["requested_by"]:
+                notify(db, [req["requested_by"]],
+                       f"Je scorewijziging voor groep {req['group_name']} op CP {req['checkpoint']} is {word}",
+                       url_for("score_request", rid=rid))
+            db.commit()
+            audit(f"wijzigingsverzoek {rid} (groep {req['group_name']} CP{req['checkpoint']}) {word}"
+                  + (f": {note}" if note else ""))
+            flash(f"Verzoek {word}.", "ok")
+        return redirect(url_for("score_request", rid=rid))
+    current = db.execute("SELECT quiz, practical FROM scores WHERE group_id = ? AND checkpoint = ?",
+                         (req["group_id"], req["checkpoint"])).fetchone()
+    return render_template("request.html", req=req, current=current)
+
+
+@app.route("/meldingen")
+@login_required()
+def notifications():
+    rows = get_db().execute("SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 100",
+                            (current_user()["id"],)).fetchall()
+    return render_template("notifications.html", rows=rows)
+
+
+@app.route("/meldingen/<int:nid>")
+@login_required()
+def notification_open(nid):
+    """Mark a notification as read and go to what it is about."""
+    db = get_db()
+    n = db.execute("SELECT * FROM notifications WHERE id = ? AND user_id = ?",
+                   (nid, current_user()["id"])).fetchone()
+    if n is None:
+        abort(404)
+    if not n["read_at"]:
+        db.execute("UPDATE notifications SET read_at = ? WHERE id = ?", (now_utc(), nid))
+        db.commit()
+    return redirect(n["link"] if n["link"].startswith("/") and not n["link"].startswith("//") else url_for("index"))
+
+
+@app.route("/meldingen/gelezen", methods=["POST"])
+@login_required()
+def notifications_read():
+    db = get_db()
+    db.execute("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL",
+               (now_utc(), current_user()["id"]))
+    db.commit()
+    return redirect(url_for("notifications"))
 
 
 @app.route("/checkpoint/<int:cp>/groep/<int:gid>/<action>", methods=["POST"])

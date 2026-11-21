@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block title %}Verzoeken{% endblock %}
+{% block content %}
+<h1>Scorewijzigingen</h1>
+<p class="muted">{% if me.role == 'admin' %}Verzoeken van checkpointposten om een al ingevoerde score te wijzigen.{% else %}Jouw verzoeken om een score te wijzigen.{% endif %}</p>
+<div class="wrap"><table>
+<tr><th>Groep</th><th>Wijziging</th><th>Status</th></tr>
+{% for r in rows %}
+<tr>
+  <td><a href="{{ url_for('score_request', rid=r.id) }}">{{ r.group_name }} · CP {{ r.checkpoint }}</a><br><span class="muted">{{ r.requester }} · {{ r.requested_at|localtime }}</span></td>
+  <td>Quiz {{ r.old_quiz or '–' }} → <b>{{ r.quiz or '–' }}</b><br>Praktijk {{ r.old_practical or '–' }} → <b>{{ r.practical or '–' }}</b></td>
+  <td>{% include "_request_status.html" %}</td>
+</tr>
+{% else %}<tr><td colspan="3" class="muted">Geen verzoeken.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

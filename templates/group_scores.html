@@ -39,16 +39,41 @@
 
 <fieldset>
 <legend>Scores voor de groep</legend>
-{% if can_edit %}
+{% set locked = me.role != 'admin' and score and score.quiz and score.practical %}
+{% if can_edit and not locked %}
 <form method="post" class="row">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% for field, label in (('quiz', 'Quiz'), ('practical', 'Praktijk')) %}
+  {% if me.role != 'admin' and score and score[field] %}
+  <label>{{ label }}<b class="fixed">{{ score[field] }}</b></label>
+  {% else %}
   <label>{{ label }}<select name="{{ field }}_{{ cp }}"><option value="">–</option>{% for i in range(1, 11) %}<option {% if score and score[field] == i %}selected{% endif %}>{{ i }}</option>{% endfor %}</select></label>
+  {% endif %}
   {% endfor %}
   <button class="big">Scores opslaan</button>
 </form>
+{% if me.role != 'admin' %}<p class="muted">Let op: een opgeslagen score kun je daarna alleen nog wijzigen met een verzoek aan de beheerder.</p>{% endif %}
 {% else %}
 <p>Quiz: <b>{{ score.quiz if score and score.quiz else '–' }}</b> · Praktijk: <b>{{ score.practical if score and score.practical else '–' }}</b></p>
+{% endif %}
+{% if can_edit and me.role != 'admin' and score and (score.quiz or score.practical) %}
+  {% if pending %}
+  <p class="flash">Er staat een <a href="{{ url_for('score_request', rid=pending.id) }}">wijzigingsverzoek</a> open: quiz {{ pending.quiz or '–' }}, praktijk {{ pending.practical or '–' }}. Een beheerder beslist hierover.</p>
+  {% else %}
+  <details class="change">
+    <summary>Score wijzigen aanvragen</summary>
+    <form method="post" action="{{ url_for('score_request_new', cp=cp, gid=group.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="row">
+      {% for field, label in (('quiz', 'Nieuwe quiz'), ('practical', 'Nieuwe praktijk')) %}
+      <label>{{ label }}<select name="{{ field }}_{{ cp }}"><option value="">–</option>{% for i in range(1, 11) %}<option {% if score and score[field] == i %}selected{% endif %}>{{ i }}</option>{% endfor %}</select></label>
+      {% endfor %}
+      </div>
+      <div class="row"><label style="flex:1 1 100%">Waarom moet dit anders?<textarea name="reason" rows="2" required maxlength="500"></textarea></label></div>
+      <button>Verzoek versturen</button>
+    </form>
+  </details>
+  {% endif %}
 {% endif %}
 </fieldset>
 
