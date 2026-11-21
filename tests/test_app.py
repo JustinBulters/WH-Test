@@ -610,3 +610,11 @@ def test_checkpoint_theme_and_crew(client):
     page = client.get("/checkpoint/3").get_data(as_text=True)
     assert "Eerste hulp" in page and "Sanne &amp; Mark" in page
     assert '"crew": "Sanne \\u0026 Mark"' in client.get("/kaart").get_data(as_text=True)
+
+
+def test_new_group_form_has_category_buttons(client):
+    login(client, "admin")
+    page = client.get("/groepen").get_data(as_text=True)
+    assert '<select name="category"' not in page
+    for cat in ("junioren", "senioren", "veteranen"):
+        assert f'name="category" value="{cat}"' in page
