@@ -1,12 +1,15 @@
 {% extends "base.html" %}{% block title %}Gebruikers{% endblock %}
 {% macro role_fields(u=None) %}
-  <label>Rol<select name="role">{% for r, label in ROLES.items() %}<option value="{{ r }}" {% if u and u.role == r %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Rol<select name="role">{% if me.is_super %}<option value="superadmin" {% if u and u.is_super %}selected{% endif %}>Superbeheerder</option>{% endif %}{% for r, label in ROLES.items() %}<option value="{{ r }}" {% if u and u.role == r and not u.is_super %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
   <label>Checkpoint (alleen post)<select name="checkpoint"><option value="">–</option>{% for cp in CHECKPOINTS %}<option {% if u and u.checkpoint == cp %}selected{% endif %}>{{ cp }}</option>{% endfor %}</select></label>
 {% endmacro %}
 {% block content %}
 <h1>Gebruikers</h1>
-<p class="muted">Beheerder: alles. Checkpointpost: alleen het eigen checkpoint inchecken, uitchecken en scoren. Meekijker: alles bekijken, niets wijzigen, geen logboek.</p>
+<p class="muted">Superbeheerder: alles, plus de startdatum en het wissen van alle groepsdata. Beheerder: alles. Checkpointpost: alleen het eigen checkpoint inchecken, uitchecken en scoren. Meekijker: alles bekijken, niets wijzigen, geen logboek.</p>
 {% for u in users %}
+{% if u.is_super and not me.is_super %}
+<fieldset><div class="row"><label>Gebruiker<b style="padding:.45rem 0">{{ u.username }}</b></label><label>Rol<b style="padding:.45rem 0">Superbeheerder</b></label><span class="muted">Alleen een superbeheerder kan dit account wijzigen.</span></div></fieldset>
+{% else %}
 <fieldset><form method="post" class="row">
   <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="update"><input type="hidden" name="user_id" value="{{ u.id }}">
   <label>Gebruiker<b style="padding:.45rem 0">{{ u.username }}</b></label>
@@ -15,6 +18,7 @@
   <label>Actief<input type="checkbox" name="active" value="1" {% if u.active %}checked{% endif %}></label>
   <button>Opslaan</button>
 </form></fieldset>
+{% endif %}
 {% endfor %}
 <h2>Nieuwe gebruiker</h2>
 <fieldset><form method="post" class="row">

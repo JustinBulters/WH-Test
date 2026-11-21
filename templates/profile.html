@@ -1,6 +1,6 @@
 {% extends "base.html" %}{% block title %}Profiel{% endblock %}
 {% block content %}
-<h1>Profiel <small>· {{ me.username }} · {{ ROLES[me.role] }}{% if me.checkpoint %} CP {{ me.checkpoint }}{% endif %}</small></h1>
+<h1>Profiel <small>· {{ me.username }} · {{ role_label(me) }}{% if me.checkpoint %} CP {{ me.checkpoint }}{% endif %}</small></h1>
 
 <fieldset>
   <legend>Weergave</legend>
