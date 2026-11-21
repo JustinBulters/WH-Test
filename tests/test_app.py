@@ -618,3 +618,18 @@ def test_new_group_form_has_category_buttons(client):
     assert '<select name="category"' not in page
     for cat in ("junioren", "senioren", "veteranen"):
         assert f'name="category" value="{cat}"' in page
+
+
+def test_username_not_case_sensitive(client):
+    t = csrf(client)
+    r = client.post("/inloggen", data={"username": "ADMIN", "password": "geheim123", "csrf": t})
+    assert r.status_code == 302
+    t = csrf(client)
+    r = client.post("/inloggen", data={"username": "Admin", "password": "GEHEIM123", "csrf": t})
+    assert r.status_code != 302  # passwords stay case sensitive
+    t = login(client, "admin")
+    r = client.post("/gebruikers", data={"csrf": t, "op": "create", "username": "Post3",
+                                         "password": "geheim123", "role": "viewer"}, follow_redirects=True)
+    assert "bestaat al" in r.get_data(as_text=True)
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3
