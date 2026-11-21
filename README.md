@@ -31,6 +31,25 @@ Settings via environment variables:
 
 - `WH_ADMIN_PASSWORD`: password for the first admin. If unset, `init-db` generates one and prints it.
 
+## Hosting on your own server or NAS (Docker)
+
+Every merge to `main` runs the tests on GitHub and then publishes a Docker image to `ghcr.io/justinbulters/wh-test:latest` (for Intel/AMD and ARM).
+
+`compose.yaml` runs two containers:
+
+- `web`: the site on port 9999, with the database in the `data` volume, which is kept across updates. `pull_policy: always` makes a rebuild fetch the newest image.
+- `updater`: checks right away and then every 2 minutes for a newer image, and restarts `web` only when there is one, so merges go live by themselves. Its log shows each check.
+
+The first admin password is not in the repository. Put it in a `.env` file next to `compose.yaml`:
+
+```
+WH_ADMIN_PASSWORD=your-password
+```
+
+It is only used when the database is created for the first time. Change passwords later on the Profiel page.
+
+On a Synology NAS: in **Container Manager > Project > Create**, name the project `wh-hike`, pick a folder, and paste `compose.yaml`. Put the Synology reverse proxy with a Let's Encrypt certificate in front for HTTPS, then set `WH_HTTPS: "1"`.
+
 ## Hosting on Render
 
 `render.yaml` describes the live site for [Render](https://render.com): a web service in Frankfurt with a 1 GB disk for the database. Every push to `main` redeploys it automatically; the data on the disk is kept.
