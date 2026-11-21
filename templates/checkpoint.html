@@ -2,18 +2,19 @@
 {% block content %}
 <h1>Checkpoint {{ cp }} <small>· dag {{ CHECKPOINTS[cp] }}</small></h1>
 <div class="wrap"><table>
-<tr><th>Groep</th><th>Nummers</th><th>Status</th><th></th></tr>
+<tr><th>Groep</th><th>Wandelaars</th><th>Status</th><th></th></tr>
 {% for g in groups %}
 <tr>
   <td><a href="{{ url_for('checkpoint_group', cp=cp, gid=g.id) }}">{{ g.name }}</a><br><span class="muted">{{ g.category|capitalize }}</span></td>
-  <td>{{ g.numbers or '–' }}</td>
+  <td>{{ g.members or '–' }}</td>
   <td>
-    {% if g.checkout_at %}<span class="tag out">uit {{ g.checkout_at|localtime('%H:%M') }}</span>
+    {% if g.retired_at %}<span class="tag off">uitgevallen</span>
+    {% elif g.checkout_at %}<span class="tag out">uit {{ g.checkout_at|localtime('%H:%M') }}</span>
     {% elif g.checkin_at %}<span class="tag in">in {{ g.checkin_at|localtime('%H:%M') }}</span>
     {% else %}<span class="tag">nog niet</span>{% endif %}
   </td>
   <td>
-    {% if can_edit and not g.checkout_at %}
+    {% if can_edit and not g.checkout_at and not g.retired_at %}
     <form class="inline" method="post" action="{{ url_for('checkpoint_stamp', cp=cp, gid=g.id, action='uit' if g.checkin_at else 'in') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button {% if g.checkin_at %}class="alt"{% endif %}>{{ 'Uitchecken' if g.checkin_at else 'Inchecken' }}</button>

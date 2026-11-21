@@ -15,9 +15,9 @@ def client(tmp_path):
         for name, role, cp in [("admin", "admin", None), ("post3", "staff", 3), ("kijk", "viewer", None)]:
             db.execute("INSERT INTO users (username, password_hash, role, checkpoint) VALUES (?, ?, ?, ?)",
                        (name, generate_password_hash("geheim123"), role, cp))
-        db.execute("INSERT INTO groups (name, category) VALUES ('De Bevers', 'junioren')")
-        db.execute("INSERT INTO hikers (number, name, comment, group_id) VALUES (101, 'Anna', 'notenallergie', 1)")
-        db.execute("INSERT INTO hikers (number, name, group_id) VALUES (102, 'Bram', 1)")
+        db.execute("INSERT INTO groups (name, category) VALUES ('101', 'junioren')")
+        db.execute("INSERT INTO hikers (name, comment, group_id) VALUES ('Anna', 'notenallergie', 1)")
+        db.execute("INSERT INTO hikers (name, group_id) VALUES ('Bram', 1)")
         db.commit()
     return wh.app.test_client()
 
@@ -62,28 +62,89 @@ def test_staff_checkin_scores_and_limits(client):
         s = [(r["group_id"], r["checkpoint"], r["quiz"], r["practical"]) for r in db.execute("SELECT * FROM scores")]
         assert s == [(1, 3, 8, None)]
         actions = [r["action"] for r in db.execute("SELECT action FROM audit_log WHERE username='post3'")]
-        assert "groep De Bevers ingecheckt op CP3" in actions
+        assert "groep 101 ingecheckt op CP3" in actions
         assert "toegang geweigerd" in actions
 
 
 def test_viewer_read_only(client):
     t = login(client, "kijk")
     page = client.get("/uitslag").get_data(as_text=True)
-    assert "De Bevers" in page and "101 Anna, 102 Bram" in page
+    assert "101" in page and "Anna, Bram" in page
     assert client.get("/checkpoint/5").status_code == 200
     assert client.post("/checkpoint/5/groep/1/in", data={"csrf": t}).status_code == 403
     assert client.post("/checkpoint/5/groep/1", data={"csrf": t, "quiz": "3"}).status_code == 403
     assert client.get("/gebruikers").status_code == 403
 
 
-def test_admin_hiker_number_range(client):
+def test_new_groups_get_next_number(client):
     t = login(client, "admin")
-    client.post("/groepen/1", data={"csrf": t, "op": "hiker_save", "number": "205", "name": "Fout"})
-    client.post("/groepen/1", data={"csrf": t, "op": "hiker_save", "number": "103", "name": "Cas"})
+    form = {"csrf": t, "category": "junioren", "hiker_name": ["Cas", "Dirk", ""],
+            "hiker_comment": ["", "glutenvrij", ""]}
+    client.post("/groepen", data=form)
+    client.post("/groepen", data={**form, "hiker_name": ["Eva", "", ""]})
+    client.post("/groepen", data={**form, "category": "veteranen", "hiker_name": ["Fien", "", ""]})
+    client.post("/groepen", data={**form, "hiker_name": ["", "", ""]})  # no names: refused
     with wh.app.app_context():
-        nums = [r[0] for r in wh.get_db().execute("SELECT number FROM hikers ORDER BY number")]
-    assert nums == [101, 102, 103]
+        db = wh.get_db()
+        groups = {r["name"]: r["category"] for r in db.execute("SELECT * FROM groups")}
+        assert groups == {"101": "junioren", "102": "junioren", "103": "junioren", "301": "veteranen"}
+        names = [r[0] for r in db.execute(
+            "SELECT h.name FROM hikers h JOIN groups g ON g.id = h.group_id WHERE g.name = '102' ORDER BY h.id")]
+        assert names == ["Cas", "Dirk"]
+        assert db.execute("SELECT comment FROM hikers WHERE name = 'Dirk'").fetchone()[0] == "glutenvrij"
     assert client.get("/logboek").status_code == 200
+
+
+def test_next_number_fills_gap_when_range_is_full(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("DELETE FROM groups")
+        db.executemany("INSERT INTO groups (name, category) VALUES (?, 'senioren')",
+                       [(str(n),) for n in range(201, 300) if n != 250])
+        assert wh.next_group_number(db, "senioren") == 250
+        db.execute("INSERT INTO groups (name, category) VALUES ('250', 'senioren')")
+        assert wh.next_group_number(db, "senioren") is None
+
+
+def test_retire_group(client):
+    t = login(client, "post3")
+    assert client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "4"}).status_code == 403
+    client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "3"})
+    page = client.get("/checkpoint/3").get_data(as_text=True)
+    assert "uitgevallen" in page and "Inchecken" not in page
+    client.post("/checkpoint/3/groep/1/in", data={"csrf": t})
+    assert client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "3", "undo": "1"}).status_code == 403
+    with wh.app.app_context():
+        g = wh.get_db().execute("SELECT * FROM groups WHERE id = 1").fetchone()
+        assert g["retired_at"] and g["retired_cp"] == 3
+        assert wh.get_db().execute("SELECT COUNT(*) FROM checkins").fetchone()[0] == 0
+    client.post("/uitloggen", data={"csrf": t})
+    t = login(client, "admin")
+    assert "uitgevallen bij CP 3" in client.get("/").get_data(as_text=True)
+    client.post("/groep/1/uitgevallen", data={"csrf": t, "undo": "1"})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT retired_at FROM groups WHERE id = 1").fetchone()[0] is None
+
+
+def test_old_database_is_migrated(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, category TEXT NOT NULL);
+        CREATE TABLE hikers (id INTEGER PRIMARY KEY, number INTEGER NOT NULL UNIQUE, name TEXT NOT NULL,
+            comment TEXT NOT NULL DEFAULT '', group_id INTEGER REFERENCES groups(id));
+        INSERT INTO groups VALUES (1, 'De Bevers', 'junioren'), (2, 'Uilen', 'veteranen');
+        INSERT INTO hikers VALUES (1, 101, 'Anna', 'noten', 1), (2, 301, 'Bob', '', 2);
+    """)
+    con.commit(); con.close()
+    wh.app.config.update(DATABASE=str(path))
+    with wh.app.app_context():
+        wh.init_db()
+        db = wh.get_db()
+        assert [r[0] for r in db.execute("SELECT name FROM groups ORDER BY id")] == ["101", "301"]
+        assert "number" not in [r[1] for r in db.execute("PRAGMA table_info(hikers)")]
+        assert db.execute("SELECT name, comment, group_id FROM hikers WHERE id = 1").fetchone()[:] == ("Anna", "noten", 1)
 
 
 def test_localtime_filter():

@@ -1,18 +1,21 @@
-{% extends "base.html" %}{% block title %}{{ group.name }} · CP {{ cp }}{% endblock %}
+{% extends "base.html" %}{% block title %}Groep {{ group.name }} · CP {{ cp }}{% endblock %}
 {% block content %}
 <p><a href="{{ url_for('checkpoint', cp=cp) }}">← Checkpoint {{ cp }}</a></p>
-<h1>{{ group.name }} <small>· {{ group.category|capitalize }} · CP {{ cp }}</small></h1>
+<h1>Groep {{ group.name }} <small>· {{ group.category|capitalize }} · CP {{ cp }}</small></h1>
+
+{% set back = url_for('checkpoint_group', cp=cp, gid=group.id) %}
+{% include "_retired.html" %}
 
 <fieldset>
   <legend>In- en uitchecken</legend>
-  {% set back = url_for('checkpoint_group', cp=cp, gid=group.id) %}
   <div class="stamp">
     <div><span class="muted">Ingecheckt</span><b>{{ visit.checkin_at|localtime('%H:%M') if visit else '–' }}</b></div>
     <div><span class="muted">Uitgecheckt</span><b>{{ visit.checkout_at|localtime('%H:%M') if visit and visit.checkout_at else '–' }}</b></div>
   </div>
   {% if can_edit %}
   <div class="actions">
-    {% if not visit %}
+    {% if group.retired_at %}
+    {% elif not visit %}
     <form class="inline" method="post" action="{{ url_for('checkpoint_stamp', cp=cp, gid=group.id, action='in') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}"><button class="big">Inchecken</button></form>
     {% elif not visit.checkout_at %}
     <form class="inline" method="post" action="{{ url_for('checkpoint_stamp', cp=cp, gid=group.id, action='uit') }}"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}"><button class="big alt">Uitchecken</button></form>
@@ -27,7 +30,7 @@
 <fieldset>
   <legend>Wandelaars</legend>
   <ul class="people">
-  {% for h in hikers %}<li><b>#{{ h.number }}</b> {{ h.name }}{% if h.comment %}<br><span class="note">{{ h.comment }}</span>{% endif %}</li>
+  {% for h in hikers %}<li>{{ h.name }}{% if h.comment %}<br><span class="note">{{ h.comment }}</span>{% endif %}</li>
   {% else %}<li class="muted">Geen wandelaars in deze groep.</li>{% endfor %}
   </ul>
 </fieldset>
@@ -46,4 +49,12 @@
 <p>Quiz: <b>{{ score.quiz if score and score.quiz else '–' }}</b> · Praktijk: <b>{{ score.practical if score and score.practical else '–' }}</b></p>
 {% endif %}
 </fieldset>
+
+{% if can_edit and not group.retired_at %}
+<form method="post" action="{{ url_for('group_retire', gid=group.id) }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="cp" value="{{ cp }}"><input type="hidden" name="back" value="{{ back }}">
+  <button class="stop">Uitgevallen</button>
+  <span class="muted">Gebruik dit als de groep niet verder kan.</span>
+</form>
+{% endif %}
 {% endblock %}
