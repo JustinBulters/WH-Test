@@ -3,9 +3,11 @@
 Lightweight Flask + SQLite app with server-rendered pages and only a little plain
 JavaScript, so it stays usable on phones with poor signal. UI text is Dutch.
 """
+import csv
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 from collections.abc import Mapping
@@ -20,7 +22,7 @@ import segno
 from flask import (Flask, abort, flash, g, jsonify, redirect, render_template, request,
                    send_file, session, url_for)
 from markupsafe import Markup
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -1370,6 +1372,8 @@ def groups():
     if request.method == "POST":
         if current_user()["role"] != "admin":
             abort(403)
+        if request.form.get("op") == "import":
+            return import_groups()
         cat = request.form.get("category")
         people = [(n.strip(), c.strip()) for n, c in zip(request.form.getlist("hiker_name"),
                                                          request.form.getlist("hiker_comment"))]
@@ -1621,6 +1625,8 @@ def settings():
             db.commit()
             audit(f"startdatum gezet op {value or 'geen'}")
             flash("Startdatum opgeslagen." if value else "Startdatum verwijderd.", "ok")
+        elif op == "backup":
+            settings_backup_now()
         elif op == "wipe":
             if request.form.get("confirm", "").strip().upper() != "WISSEN":
                 flash("Typ WISSEN om te bevestigen. Er is niets gewist.", "error")
@@ -1637,7 +1643,7 @@ def settings():
         return redirect(url_for("settings"))
     counts = {t: db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
               for t in ("groups", "hikers", "checkins", "scores")}
-    return render_template("settings.html", counts=counts, start=start_date())
+    return render_template("settings.html", counts=counts, start=start_date(), backups=list_backups())
 
 
 @app.route("/gebruikers", methods=["GET", "POST"])
@@ -1732,6 +1738,310 @@ def audit_log():
         "SELECT DISTINCT username FROM audit_log WHERE username IS NOT NULL ORDER BY username")]
     return render_template("audit.html", rows=rows[:per], more=len(rows) > per,
                            page=page, who=who, ip=ip, names=names)
+
+
+# ------------------------------------------------ backups and import (agent B)
+
+BACKUP_KEEP = 48           # newest backups kept; older ones are removed
+BACKUP_EVERY_MINUTES = 60  # automatic backup at most this often
+BACKUP_NAME = re.compile(r"^wh-\d{8}-\d{6}\.sqlite3$")
+
+
+def backup_dir():
+    """Backups live next to the database, in a folder 'backups' (on the NAS: /data/backups)."""
+    return os.path.join(os.path.dirname(os.path.abspath(app.config["DATABASE"])), "backups")
+
+
+def make_backup():
+    """Copy the database into the backup folder and keep only the newest BACKUP_KEEP copies.
+
+    sqlite3's backup API makes a consistent copy, also while other requests write.
+    """
+    folder = backup_dir()
+    os.makedirs(folder, exist_ok=True)
+    name = datetime.now(timezone.utc).strftime("wh-%Y%m%d-%H%M%S.sqlite3")
+    tmp = os.path.join(folder, name + ".tmp")
+    src = sqlite3.connect(app.config["DATABASE"])
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    os.replace(tmp, os.path.join(folder, name))  # a half-written file never looks like a backup
+    for old in sorted(f for f in os.listdir(folder) if BACKUP_NAME.match(f))[:-BACKUP_KEEP]:
+        os.remove(os.path.join(folder, old))
+    return name
+
+
+def list_backups():
+    """Backups, newest first: name, time made (UTC ISO) and size in bytes."""
+    folder = backup_dir()
+    if not os.path.isdir(folder):
+        return []
+    out = []
+    for name in sorted((f for f in os.listdir(folder) if BACKUP_NAME.match(f)), reverse=True):
+        try:
+            at = datetime.strptime(name[3:18], "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:  # e.g. a hand-made file with an impossible date
+            continue
+        out.append({"name": name, "at": at.isoformat(timespec="seconds"),
+                    "size": os.path.getsize(os.path.join(folder, name))})
+    return out
+
+
+@app.template_filter("filesize")
+def filesize(n):
+    return f"{n / 1024 / 1024:.1f} MB" if n >= 1024 * 1024 else f"{max(1, round(n / 1024))} KB"
+
+
+@app.after_request
+def auto_backup(response):
+    """At most once per hour, a backup after a normal request. No background job needed.
+
+    The UPDATE only succeeds for one request, so two workers never back up at the same time.
+    A failing backup is logged but never breaks the page.
+    """
+    if request.endpoint in ("static", "service_worker"):
+        return response
+    try:
+        db = get_db()
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(minutes=BACKUP_EVERY_MINUTES)).isoformat(timespec="seconds")
+        db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('last_backup', '')")
+        cur = db.execute("UPDATE settings SET value = ? WHERE key = 'last_backup' AND value < ?",
+                         (now_utc(), cutoff))
+        db.commit()
+        if cur.rowcount:
+            make_backup()
+    except Exception:
+        app.logger.exception("Automatische backup mislukt")
+        try:
+            get_db().rollback()
+        except Exception:
+            pass
+    return response
+
+
+def settings_backup_now():
+    """op=backup on the settings page (superadmin): make a backup right away."""
+    try:
+        name = make_backup()
+    except Exception:
+        app.logger.exception("Backup mislukt")
+        flash("De backup is mislukt. Kijk in de logs van de container.", "error")
+        return
+    audit(f"backup gemaakt: {name}")
+    flash(f"Backup gemaakt: {name}", "ok")
+
+
+@app.route("/instellingen/backup/<name>")
+@login_required("admin", "superadmin")
+def backup_download(name):
+    if not BACKUP_NAME.match(name):
+        abort(404)
+    path = os.path.join(backup_dir(), name)
+    if not os.path.isfile(path):
+        abort(404)
+    audit(f"backup gedownload: {name}")
+    return send_file(path, as_attachment=True, download_name=name,
+                     mimetype="application/vnd.sqlite3")
+
+
+IMPORT_MAX_BYTES = 1024 * 1024
+IMPORT_COLUMNS = ["categorie", "wandelaar 1", "opmerking 1", "wandelaar 2", "opmerking 2",
+                  "wandelaar 3", "opmerking 3", "noodnummer"]
+IMPORT_EXAMPLE = [
+    ["Junioren", "Anna de Vries", "notenallergie", "Bram Jansen", "", "", "", "06 12345678"],
+    ["Senioren", "Chris Bakker", "", "Dana Visser", "", "Eva Smit", "", ""],
+    ["Veteranen", "Frank Mulder", "", "Gijs de Boer", "diabetes", "", "", "06 87654321"],
+]
+
+
+def _cell_text(value):
+    """A spreadsheet cell as text: 612345678.0 becomes '612345678', empty becomes ''."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _read_import_rows(ext, data):
+    """The rows of an uploaded .csv or .xlsx file: a list of (row number, list of cell texts)."""
+    if ext == ".csv":
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("cp1252", errors="replace")
+        try:
+            delimiter = csv.Sniffer().sniff(text[:4096], delimiters=";,").delimiter
+        except csv.Error:
+            delimiter = ";"
+        rows = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+        return [(i, [_cell_text(c) for c in r]) for i, r in enumerate(rows, start=1)]
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        ws = wb.worksheets[0]
+        return [(i, [_cell_text(c) for c in r])
+                for i, r in enumerate(ws.iter_rows(values_only=True), start=1)]
+    finally:
+        wb.close()
+
+
+def parse_group_import(ext, data):
+    """Check an import file. Returns (groups, errors).
+
+    groups is a list of (row number, category, [(name, comment), ...], phone).
+    """
+    try:
+        rows = [(i, r) for i, r in _read_import_rows(ext, data) if any(r)]
+    except Exception:
+        return [], ["Het bestand kon niet worden gelezen. Is het een geldig CSV- of Excel-bestand?"]
+    if not rows:
+        return [], ["Het bestand is leeg."]
+    cols = {}
+    for pos, h in enumerate(rows[0][1]):
+        key = " ".join(h.lower().split())
+        if key in IMPORT_COLUMNS and key not in cols:
+            cols[key] = pos
+    missing = [c for c in ("categorie", "wandelaar 1") if c not in cols]
+    if missing:
+        return [], ["De kopregel (rij 1) mist de kolom " + " en ".join(f"'{c}'" for c in missing) + "."]
+
+    def get(r, key):
+        pos = cols.get(key)
+        return r[pos] if pos is not None and pos < len(r) else ""
+
+    groups, errors = [], []
+    for num, r in rows[1:]:
+        cat = get(r, "categorie").lower()
+        if not cat:
+            errors.append(f"Rij {num}: geen categorie")
+        elif cat not in CATEGORIES:
+            errors.append(f"Rij {num}: onbekende categorie '{get(r, 'categorie')[:40]}'")
+        people = []
+        for k in range(1, 4):
+            name, comment = get(r, f"wandelaar {k}"), get(r, f"opmerking {k}")
+            if not name:
+                if k == 1:
+                    errors.append(f"Rij {num}: geen naam bij wandelaar 1")
+                elif comment:
+                    errors.append(f"Rij {num}: opmerking {k} zonder naam bij wandelaar {k}")
+                continue
+            if len(name) > 100:
+                errors.append(f"Rij {num}: naam bij wandelaar {k} is te lang (hoogstens 100 tekens)")
+            if len(comment) > 500:
+                errors.append(f"Rij {num}: opmerking {k} is te lang (hoogstens 500 tekens)")
+            people.append((name, comment))
+        if len(people) > MAX_HIKERS:
+            errors.append(f"Rij {num}: hoogstens {MAX_HIKERS} wandelaars per groep")
+        phone = get(r, "noodnummer")
+        if len(phone) > 40:
+            errors.append(f"Rij {num}: noodnummer is te lang (hoogstens 40 tekens)")
+        groups.append((num, cat, people, phone))
+    if not groups and not errors:
+        errors.append("Het bestand bevat alleen een kopregel, geen groepen.")
+    return groups, errors
+
+
+def number_ranges(numbers):
+    """[101, 102, 103, 201] -> '101-103, 201'."""
+    parts, nums, i = [], sorted(numbers), 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        parts.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return ", ".join(parts)
+
+
+def import_groups():
+    """op=import on the groups page: add many groups at once. One error means nothing is imported."""
+    back = redirect(url_for("groups"))
+    f = request.files.get("file")
+    filename = (f.filename or "").strip() if f else ""
+    if not filename:
+        flash("Kies een bestand om te importeren.", "error")
+        return back
+    ext = os.path.splitext(filename.lower())[1]
+    if ext not in (".csv", ".xlsx"):
+        flash("Alleen een CSV-bestand (.csv) of Excel-bestand (.xlsx) kan worden geïmporteerd.", "error")
+        return back
+    data = f.read(IMPORT_MAX_BYTES + 1)
+    if len(data) > IMPORT_MAX_BYTES:
+        flash("Het bestand is te groot (hoogstens 1 MB).", "error")
+        return back
+    groups, errors = parse_group_import(ext, data)
+    made = []
+    if not errors:
+        db = get_db()
+        if db.in_transaction:
+            db.commit()
+        db.execute("BEGIN IMMEDIATE")  # nobody else adds a group while the numbers are handed out
+        try:
+            for num, cat, people, phone in groups:
+                number = next_group_number(db, cat)
+                if number is None:
+                    errors.append(f"Rij {num}: categorie {cat} is vol")
+                    continue
+                cur = db.execute("INSERT INTO groups (name, category, phone) VALUES (?, ?, ?)",
+                                 (str(number), cat, phone))
+                db.executemany("INSERT INTO hikers (name, comment, group_id) VALUES (?, ?, ?)",
+                               [(n, c, cur.lastrowid) for n, c in people])
+                made.append(number)
+        except Exception:
+            db.rollback()
+            raise
+        if errors:
+            db.rollback()
+        else:
+            db.commit()
+    if errors:
+        flash(f"Er is niets geïmporteerd: {len(errors)} fout{'en' if len(errors) != 1 else ''} in het "
+              "bestand. Verbeter het bestand en probeer het opnieuw.", "error")
+        for e in errors[:25]:
+            flash(e, "error")
+        if len(errors) > 25:
+            flash(f"... en nog {len(errors) - 25} fouten.", "error")
+        return back
+    audit(f"groepen geïmporteerd: {len(made)} uit {filename[:100]}")
+    flash(f"{len(made)} groep{'en' if len(made) != 1 else ''} geïmporteerd: {number_ranges(made)}", "ok")
+    return back
+
+
+@app.route("/groepen/voorbeeld.csv")
+@login_required("admin")
+def import_example_csv():
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=";", lineterminator="\r\n")
+    w.writerow(IMPORT_COLUMNS)
+    w.writerows(IMPORT_EXAMPLE)
+    return send_file(io.BytesIO(out.getvalue().encode("utf-8-sig")), as_attachment=True,
+                     download_name="voorbeeld-groepen.csv", mimetype="text/csv")
+
+
+@app.route("/groepen/voorbeeld.xlsx")
+@login_required("admin")
+def import_example_xlsx():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Groepen"
+    ws.append(IMPORT_COLUMNS)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for r in IMPORT_EXAMPLE:
+        ws.append(r)
+    for col in ws.columns:
+        ws.column_dimensions[col[0].column_letter].width = max(12, max(len(str(c.value or "")) for c in col) + 2)
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return send_file(out, as_attachment=True, download_name="voorbeeld-groepen.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.errorhandler(403)

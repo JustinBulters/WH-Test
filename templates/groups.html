@@ -26,6 +26,18 @@
     <p class="muted">De groep krijgt automatisch het volgende vrije nummer in de gekozen categorie.</p>
   </form>
 </fieldset>
+{# --- import (agent B) --- #}
+<fieldset>
+  <legend>Groepen importeren uit Excel of CSV</legend>
+  <p class="muted">Eén regel per groep. De eerste regel noemt de kolommen: <b>categorie</b>, <b>wandelaar 1</b>, opmerking 1, wandelaar 2, opmerking 2, wandelaar 3, opmerking 3, noodnummer. Categorie is junioren, senioren of veteranen. Categorie en wandelaar 1 zijn verplicht, de rest mag leeg. Elke groep krijgt automatisch een nummer. Staat er ergens een fout in, dan wordt er niets geïmporteerd.</p>
+  <p class="actions">Voorbeeld: <a href="{{ url_for('import_example_xlsx') }}">Excel (.xlsx)</a> · <a href="{{ url_for('import_example_csv') }}">CSV</a></p>
+  <form method="post" enctype="multipart/form-data" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="import">
+    <label>Bestand (.xlsx of .csv, hoogstens 1 MB)<input type="file" name="file" accept=".xlsx,.csv" required></label>
+    <button>Importeren</button>
+  </form>
+</fieldset>
+{# --- end import (agent B) --- #}
 {% endif %}
 {% for cat in CATEGORIES %}
 <h2>{{ cat|capitalize }}</h2>
