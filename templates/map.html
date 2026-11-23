@@ -14,6 +14,9 @@
   <span><i class="pin"></i> nog groepen verwacht</span>
   <span><i class="pin here"></i> groepen aanwezig</span>
   <span><i class="pin done"></i> iedereen is langs geweest</span>
+  <span><i class="gdot"></i> groep</span>
+  <span><i class="gdot late"></i> groep te laat</span>
+  <label class="gtoggle"><input type="checkbox" id="show-groups" checked> Groepen tonen</label>
 </div>
 {% if not points|selectattr('lat')|list %}<p class="muted">Er staan nog geen checkpoints op de kaart.{% if not admin %} Een beheerder kan ze plaatsen.{% endif %}</p>{% endif %}
 <noscript><p class="flash error">De kaart werkt alleen met JavaScript aan.</p></noscript>
@@ -22,7 +25,7 @@
 (function () {
   var points = {{ points|tojson }}, admin = {{ 'true' if admin else 'false' }};
   var csrf = {{ csrf|tojson }}, postUrl = {{ url_for('map_view')|tojson }};
-  var map = L.map('map', {zoomControl: true}).setView([52.2, 5.3], 7);
+  var map = window.whMap = L.map('map', {zoomControl: true}).setView([52.2, 5.3], 7);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map);
@@ -87,6 +90,54 @@
   });
   var firstFree = points.find(function (p) { return p.lat === null; });
   if (firstFree) select.value = firstFree.cp;
+})();
+</script>
+<script>
+(function () {
+  // Groups on the map: number, category and where they are. Refreshed every minute.
+  var map = window.whMap, url = {{ url_for('map_groups')|tojson }};
+  if (!map) return;
+  var layer = L.layerGroup().addTo(map), groups = [], openGroup = false;
+  var box = document.getElementById('show-groups');
+  function esc(t) { var d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+  function draw() {
+    layer.clearLayers();
+    // Groups on the same spot are spread over a small circle, so each one stays clickable.
+    var spots = {};
+    groups.forEach(function (gr) { var k = gr.lat + ',' + gr.lng; (spots[k] = spots[k] || []).push(gr); });
+    Object.keys(spots).forEach(function (k) {
+      var list = spots[k], n = list.length;
+      var center = map.latLngToLayerPoint([list[0].lat, list[0].lng]);
+      // Around a checkpoint pin keep a ring free for the pin itself.
+      var r = list[0].at_cp ? 30 + Math.max(0, n - 8) * 2 : (n > 1 ? 10 + n * 2 : 0);
+      list.forEach(function (gr, i) {
+        var a = 2 * Math.PI * i / n - Math.PI / 2;
+        var ll = map.layerPointToLatLng(center.add(L.point(r * Math.cos(a), r * Math.sin(a))));
+        var color = gr.late ? '#c2413b' : '#2e8b57';
+        L.circleMarker(ll, {radius: 8, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1,
+                            bubblingMouseEvents: false})
+          .bindPopup('<b>Groep ' + esc(gr.number) + '</b> · ' + esc(gr.state)
+                     + '<br><span class="muted">' + esc(gr.category.charAt(0).toUpperCase() + gr.category.slice(1))
+                     + (gr.late ? ' · te laat' : '') + '</span>')
+          .bindTooltip(esc(gr.number), {direction: 'top', offset: [0, -6]})
+          .on('popupopen', function () { openGroup = true; })
+          .on('popupclose', function () { openGroup = false; })
+          .addTo(layer);
+      });
+    });
+  }
+  function load() {
+    if (openGroup || document.hidden) return;  // don't close a popup someone is reading
+    fetch(url, {credentials: 'same-origin', cache: 'no-store'}).then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (data) {
+      if (data && !openGroup) { groups = data.groups || []; draw(); }
+    }).catch(function () {});
+  }
+  map.on('zoomend', draw);
+  box.addEventListener('change', function () { if (box.checked) layer.addTo(map); else map.removeLayer(layer); });
+  load();
+  setInterval(load, 60000);
 })();
 </script>
 {% endblock %}

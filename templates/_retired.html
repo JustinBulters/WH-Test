@@ -1,6 +1,7 @@
 {% if group.retired_at %}
 <div class="flash error">
   Uitgevallen op {{ group.retired_at|localtime }}{% if group.retired_cp %} bij CP {{ group.retired_cp }}{% endif %}{% if group.retired_note %}: {{ group.retired_note }}{% endif %}.
+  {% if group.retired_reason and group.retired_reason|lower != group.retired_note|lower %}Reden: {{ group.retired_reason }}.{% endif %}
   {% if me.role == 'admin' %}
   <form method="post" action="{{ url_for('group_retire', gid=group.id) }}" class="inline">
     <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="undo" value="1"><input type="hidden" name="back" value="{{ back }}">

@@ -133,7 +133,8 @@ CREATE TABLE IF NOT EXISTS groups (
     retired_at TEXT,            -- set when the group dropped out ("uitgevallen")
     retired_cp INTEGER,
     phone TEXT NOT NULL DEFAULT '',  -- emergency contact, only shown to admins
-    retired_note TEXT NOT NULL DEFAULT ''  -- e.g. 'samengevoegd met 101'
+    retired_note TEXT NOT NULL DEFAULT '',  -- e.g. 'samengevoegd met 101'
+    retired_reason TEXT NOT NULL DEFAULT ''  -- why it dropped out, e.g. 'Blessure: knie'
 );
 CREATE TABLE IF NOT EXISTS hikers (
     id INTEGER PRIMARY KEY,
@@ -269,6 +270,8 @@ def init_db():
         db.execute("ALTER TABLE groups ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
     if "retired_note" not in gcols:
         db.execute("ALTER TABLE groups ADD COLUMN retired_note TEXT NOT NULL DEFAULT ''")
+    if "retired_reason" not in gcols:
+        db.execute("ALTER TABLE groups ADD COLUMN retired_reason TEXT NOT NULL DEFAULT ''")
     # Hikers no longer have their own number: the group has it.
     if "number" in {r["name"] for r in db.execute("PRAGMA table_info(hikers)")}:
         db.commit()
@@ -400,7 +403,7 @@ def csrf_protect():
 
 @app.after_request
 def write_audit(response):
-    if request.endpoint in ("static", "service_worker", "notifications_poll", "csrf_token"):
+    if request.endpoint in ("static", "service_worker", "notifications_poll", "csrf_token", "map_groups"):
         return response
     user = current_user()  # cached in g, so still known right after logout
     action = g.get("audit_action")
@@ -1332,12 +1335,16 @@ def group_retire(gid):
               "Voeg eerst een wandelaar toe.", "error")
         return redirect(safe_back(url_for("index")))
     if request.form.get("undo"):
-        db.execute("UPDATE groups SET retired_at = NULL, retired_cp = NULL, retired_note = '' WHERE id = ?", (gid,))
+        db.execute("UPDATE groups SET retired_at = NULL, retired_cp = NULL, retired_note = '', retired_reason = '' "
+                   "WHERE id = ?", (gid,))
         audit(f"groep {group['name']} weer actief gemaakt")
         flash(f"Groep {group['name']} doet weer mee.", "ok")
     elif not group["retired_at"]:
-        db.execute("UPDATE groups SET retired_at = ?, retired_cp = ? WHERE id = ?", (now_utc(), cp, gid))
-        audit(f"groep {group['name']} uitgevallen" + (f" bij CP{cp}" if cp else ""))
+        reason = retire_reason_from_form()
+        db.execute("UPDATE groups SET retired_at = ?, retired_cp = ?, retired_reason = ? WHERE id = ?",
+                   (now_utc(), cp, reason, gid))
+        audit(f"groep {group['name']} uitgevallen" + (f" bij CP{cp}" if cp else "")
+              + (f", reden: {reason}" if reason else ""))
         flash(f"Groep {group['name']} staat nu als uitgevallen.", "ok")
     db.commit()
     return redirect(safe_back(url_for("index")))
@@ -1413,11 +1420,12 @@ def export_xlsx():
         hikers.setdefault(h["group_id"], []).append(h)
     groups = db.execute("SELECT * FROM groups ORDER BY category, CAST(name AS INTEGER)").fetchall()
     sheet("Groepen", ["Groep", "Categorie", "Wandelaars", "Opmerkingen", "Noodnummer",
-                      "Uitgevallen", "Uitgevallen bij CP"],
+                      "Uitgevallen", "Uitgevallen bij CP", "Reden uitvallen"],
           [(int(gr["name"]), gr["category"].capitalize(),
             ", ".join(h["name"] for h in hikers.get(gr["id"], [])),
             "; ".join(f"{h['name']}: {h['comment']}" for h in hikers.get(gr["id"], []) if h["comment"]),
-            gr["phone"], localtime(gr["retired_at"]) if gr["retired_at"] else "", gr["retired_cp"] or "")
+            gr["phone"], localtime(gr["retired_at"]) if gr["retired_at"] else "", gr["retired_cp"] or "",
+            gr["retired_reason"])
            for gr in groups])
     visits = db.execute(
         # k.checkpoint, not c.checkpoint: a score at a CP without a check-in must not drop out.
@@ -1636,8 +1644,9 @@ def group_edit(gid):
                 if group["retired_at"]:
                     db.execute("UPDATE groups SET retired_note = ? WHERE id = ?", (note, gid))
                 else:
-                    db.execute("UPDATE groups SET retired_at = ?, retired_cp = ?, retired_note = ? WHERE id = ?",
-                               (now_utc(), last[0] if last else None, note, gid))
+                    db.execute("UPDATE groups SET retired_at = ?, retired_cp = ?, retired_note = ?, retired_reason = ? "
+                               "WHERE id = ?", (now_utc(), last[0] if last else None, note,
+                                                f"Samengevoegd met {target['name']}", gid))
                 db.commit()
                 names = ", ".join(h["name"] for h in moving)
                 audit(f"groep {group['name']} samengevoegd met {target['name']}: {names} overgestapt")
@@ -1662,6 +1671,111 @@ def group_edit(gid):
         "CAST(g.name AS INTEGER)", (gid, group["category"])).fetchall()
     return render_template("group_edit.html", group=group, hikers=hikers, others=others,
                            progress=group_progress(db, group))
+
+
+# ------------------------------------------------ map, dropout reason, paper sheets (agent C)
+
+# Choices for "why did this group drop out"; the admin may add a few words of their own.
+RETIRE_REASONS = ["Blessure", "Ziek of niet lekker", "Te moe", "Opgehaald door ouders", "Anders"]
+
+
+def retire_reason_from_form():
+    """'Blessure: knie' from the retire form; '' when nothing was filled in."""
+    choice = request.form.get("reason", "")
+    choice = choice if choice in RETIRE_REASONS else ""
+    text = " ".join(request.form.get("reason_text", "").split())[:200]
+    if choice and text:
+        return f"{choice}: {text}"
+    return choice or text
+
+
+@app.context_processor
+def inject_retire_reasons():
+    return {"RETIRE_REASONS": RETIRE_REASONS}
+
+
+def group_positions(db):
+    """Where each active group is on the map, by its most recent check-in or check-out.
+
+    Only the group number, category and state: no names, comments or phone numbers,
+    so the map shows nothing personal.
+    """
+    locs = {r["checkpoint"]: (r["lat"], r["lng"]) for r in db.execute("SELECT * FROM checkpoint_locations")}
+    nxt = legs()
+    late = {x["id"] for x in late_groups(db)}
+    out = []
+    for r in db.execute(
+            "SELECT g.id, g.name, g.category, c.checkpoint, c.checkin_at, c.checkout_at FROM groups g JOIN ("
+            "  SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id "
+            "    ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC) AS rn FROM checkins"
+            ") c ON c.group_id = g.id AND c.rn = 1 "
+            "WHERE g.retired_at IS NULL ORDER BY g.category, CAST(g.name AS INTEGER)"):
+        cp = r["checkpoint"]
+        if cp not in CHECKPOINTS or cp not in locs:
+            continue
+        (lat, lng), at_cp = locs[cp], True
+        if not r["checkout_at"]:
+            state = f"op {cp_label(cp)}"
+        elif cp in nxt:
+            to = nxt[cp]
+            state = f"onderweg van CP {cp} naar CP {to} sinds {localtime(r['checkout_at'], '%H:%M')}"
+            if to in locs:  # halfway along the leg
+                lat, lng = round((lat + locs[to][0]) / 2, 6), round((lng + locs[to][1]) / 2, 6)
+                at_cp = False
+        else:
+            state = "dag 1 klaar" if CHECKPOINTS[cp] == 1 else "binnen"
+        out.append({"number": r["name"], "category": r["category"], "state": state,
+                    "lat": lat, "lng": lng, "at_cp": at_cp, "late": r["id"] in late})
+    return out
+
+
+@app.route("/kaart/groepen.json")
+@login_required()
+def map_groups():
+    """The groups on the map; the map page fetches this every minute."""
+    if not can_see_map(current_user()):
+        abort(403)
+    resp = jsonify(groups=group_positions(get_db()))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def paper_sheet(cp):
+    """Header details for one checkpoint's paper list."""
+    day = CHECKPOINTS[cp]
+    sd = start_date()
+    return {"cp": cp, "label": cp_label(cp), "day": day,
+            "date": sd + timedelta(days=day - 1) if sd else None,
+            "theme": cp_details(cp).get("theme", ""), "crew": cp_details(cp).get("crew", "")}
+
+
+def paper_groups(db):
+    """All groups still walking, with hiker count and comments (e.g. allergies)."""
+    hikers = {}
+    for h in db.execute("SELECT * FROM hikers ORDER BY id"):
+        hikers.setdefault(h["group_id"], []).append(h)
+    return [{"name": gr["name"], "category": gr["category"], "size": len(hikers.get(gr["id"], [])),
+             "comments": "; ".join(f"{h['name']}: {h['comment']}" for h in hikers.get(gr["id"], [])
+                                   if h["comment"])}
+            for gr in db.execute("SELECT * FROM groups WHERE retired_at IS NULL "
+                                 "ORDER BY category, CAST(name AS INTEGER)")]
+
+
+@app.route("/checkpoint/<int:cp>/papier")
+@login_required()
+def paper_checkpoint(cp):
+    """Printable backup list for one checkpoint, to fill in by hand when phones fail."""
+    check_cp(cp)
+    return render_template("paper.html", sheets=[paper_sheet(cp)], groups=paper_groups(get_db()),
+                           bare=True, back=url_for("checkpoint", cp=cp))
+
+
+@app.route("/papier")
+@login_required("admin")
+def paper_all():
+    """The paper lists of every checkpoint in one document, one checkpoint per page."""
+    return render_template("paper.html", sheets=[paper_sheet(cp) for cp in CHECKPOINTS],
+                           groups=paper_groups(get_db()), bare=True, back=url_for("checkpoint_setup"))
 
 
 # ------------------------------------------------------------------- users

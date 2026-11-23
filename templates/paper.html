@@ -1,0 +1,21 @@
+{% extends "base.html" %}{% block title %}Papieren lijst{% endblock %}
+{% block content %}
+<div class="paper">
+<p class="noprint paper-tools"><button type="button" onclick="window.print()">Afdrukken</button> <a href="{{ back }}">Terug</a></p>
+{% for s in sheets %}
+<section class="paper-cp">
+  <h1>{{ s.label }}</h1>
+  <p class="paper-meta">Dag {{ s.day }}{% if s.date %} · {{ s.date|dutch_date }}{% endif %}{% if s.theme %} · Thema: {{ s.theme }}{% endif %}{% if s.crew %} · Bemanning: {{ s.crew }}{% endif %}</p>
+  <table>
+    <thead><tr><th>Groep</th><th>Categorie</th><th>Wandelaars</th><th>Opmerkingen</th><th>Inchecken</th><th>Uitchecken</th><th>Quiz</th><th>Praktijk</th></tr></thead>
+    <tbody>
+    {% for gr in groups %}
+    <tr><td><b>{{ gr.name }}</b></td><td>{{ gr.category|capitalize }}</td><td>{{ gr.size }}</td><td class="note">{{ gr.comments }}</td><td class="box"></td><td class="box"></td><td class="box small"></td><td class="box small"></td></tr>
+    {% else %}<tr><td colspan="8">Nog geen groepen.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  <p class="paper-foot">Schrijf tijden als UU:MM. Quiz en praktijk: 1 tot 10. Voer alles later in op de site.</p>
+</section>
+{% endfor %}
+</div>
+{% endblock %}

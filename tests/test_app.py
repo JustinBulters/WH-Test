@@ -1209,3 +1209,142 @@ def test_manual_group_create_still_works(client):
     client.post("/groepen", data={"csrf": t, "category": "senioren", "hiker_name": ["X", "", ""],
                                   "hiker_comment": ["", "", ""], "phone": ""})
     assert "201" in _groups()
+
+# --- Agent C: map, dropout reason, paper sheets
+
+def test_map_groups_json_positions_and_privacy(client):
+    from datetime import datetime, timedelta, timezone
+    t = login(client, "admin")
+    client.post("/groepen", data={"csrf": t, "category": "junioren", "hiker_name": ["Cees", "", ""],
+                                  "hiker_comment": ["", "", ""]})
+    client.post("/groepen", data={"csrf": t, "category": "senioren", "hiker_name": ["Dirk", "", ""],
+                                  "hiker_comment": ["", "", ""]})
+    for cp, lat, lng in ((1, 52.0, 5.0), (2, 52.2, 5.4), (7, 52.5, 5.5)):
+        client.post("/kaart", data={"csrf": t, "cp": str(cp), "lat": str(lat), "lng": str(lng), "ajax": "1"})
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_1": "30"})
+    now = datetime.now(timezone.utc)
+    ago = lambda m: (now - timedelta(minutes=m)).isoformat(timespec="seconds")
+    with wh.app.app_context():
+        db = wh.get_db()
+        # 101 left CP 1 two hours ago (late: 30 + 30 grace), 102 is at CP 2, 201 finished day 1.
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (1, 1, ?, ?)",
+                   (ago(130), ago(120)))
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at) VALUES (2, 2, ?)", (ago(5),))
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (3, 7, ?, ?)",
+                   (ago(20), ago(10)))
+        db.commit()
+    r = client.get("/kaart/groepen.json")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "Anna" not in body and "notenallergie" not in body and "Cees" not in body
+    groups = {x["number"]: x for x in r.get_json()["groups"]}
+    assert set(groups) == {"101", "102", "201"}
+    walk = groups["101"]
+    assert (walk["lat"], walk["lng"]) == (52.1, 5.2) and walk["late"] is True
+    since = wh.localtime(ago(120), "%H:%M")
+    assert walk["state"] == f"onderweg van CP 1 naar CP 2 sinds {since}"
+    assert (groups["102"]["lat"], groups["102"]["lng"], groups["102"]["state"]) == (52.2, 5.4, "op CP 2")
+    assert groups["102"]["late"] is False and groups["102"]["category"] == "junioren"
+    assert groups["201"]["state"] == "dag 1 klaar" and groups["201"]["lat"] == 52.5
+    # A retired group is left out.
+    client.post("/groep/2/uitgevallen", data={"csrf": t})
+    assert {x["number"] for x in client.get("/kaart/groepen.json").get_json()["groups"]} == {"101", "201"}
+    # A group at a checkpoint without a location is left out too.
+    client.post("/kaart", data={"csrf": t, "cp": "7", "op": "remove"})
+    assert {x["number"] for x in client.get("/kaart/groepen.json").get_json()["groups"]} == {"101"}
+    assert "show-groups" in client.get("/kaart").get_data(as_text=True)
+
+
+def test_map_groups_json_needs_map_access(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("UPDATE users SET can_map = 0 WHERE username = 'post3'")
+        db.commit()
+    login(client, "post3")
+    assert client.get("/kaart/groepen.json").status_code == 403
+    assert wh.app.test_client().get("/kaart/groepen.json?ajax=1").status_code == 401
+
+
+def test_retire_with_reason_and_undo(client):
+    import io
+    from openpyxl import load_workbook
+    t = login(client, "admin")
+    page = client.get("/checkpoint/3/groep/1").get_data(as_text=True)
+    assert 'name="reason"' in page and "Opgehaald door ouders" in page
+    assert 'name="reason"' in client.get("/groepen/1").get_data(as_text=True)
+    client.post("/groep/1/uitgevallen", data={"csrf": t, "cp": "3", "reason": "Blessure", "reason_text": "knie"})
+    with wh.app.app_context():
+        db = wh.get_db()
+        assert db.execute("SELECT retired_reason FROM groups WHERE id = 1").fetchone()[0] == "Blessure: knie"
+        actions = [r[0] for r in db.execute("SELECT action FROM audit_log")]
+        assert "groep 101 uitgevallen bij CP3, reden: Blessure: knie" in actions
+    assert "Reden: Blessure: knie" in client.get("/groepen/1").get_data(as_text=True)
+    assert "Reden: Blessure: knie" in client.get("/checkpoint/3/groep/1").get_data(as_text=True)
+    wb = load_workbook(io.BytesIO(client.get("/export.xlsx").data))
+    header = [c.value for c in wb["Groepen"][1]]
+    assert header[header.index("Uitgevallen bij CP") + 1] == "Reden uitvallen"
+    row = list(wb["Groepen"].iter_rows(min_row=2, values_only=True))[0]
+    assert row[header.index("Reden uitvallen")] == "Blessure: knie"
+    client.post("/groep/1/uitgevallen", data={"csrf": t, "undo": "1"})
+    with wh.app.app_context():
+        g = wh.get_db().execute("SELECT retired_at, retired_reason FROM groups WHERE id = 1").fetchone()
+        assert g["retired_at"] is None and g["retired_reason"] == ""
+    # An unknown choice is ignored; the text alone is kept, cut at 200 characters.
+    client.post("/groep/1/uitgevallen", data={"csrf": t, "reason": "Hack", "reason_text": "x" * 300})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT retired_reason FROM groups WHERE id = 1").fetchone()[0] == "x" * 200
+
+
+def test_merge_sets_retired_reason(client):
+    t = login(client, "admin")
+    client.post("/groepen", data={"csrf": t, "category": "junioren", "hiker_name": ["Cees", "", ""],
+                                  "hiker_comment": ["", "", ""]})
+    with wh.app.app_context():
+        cees = wh.get_db().execute("SELECT id FROM hikers WHERE name = 'Cees'").fetchone()[0]
+    client.post("/groepen/2", data={"csrf": t, "op": "merge", "target": "1", "hiker": [str(cees)]})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT retired_reason FROM groups WHERE id = 2").fetchone()[0] == \
+            "Samengevoegd met 101"
+
+
+def test_old_database_gets_retired_reason_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite3"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE groups (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, category TEXT NOT NULL)")
+    con.execute("INSERT INTO groups (name, category) VALUES ('101', 'junioren')")
+    con.commit()
+    con.close()
+    wh.app.config.update(DATABASE=str(path), TESTING=True)
+    with wh.app.app_context():
+        wh.init_db()
+        assert wh.get_db().execute("SELECT retired_reason FROM groups").fetchone()[0] == ""
+
+
+def test_paper_sheets(client):
+    t = login(client, "admin")
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "name_3": "Molen",
+                                      "theme_3": "Knopen", "crew_3": "Sanne"})
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("INSERT INTO settings (key, value) VALUES ('start_date', '2026-06-13')")
+        db.execute("INSERT INTO groups (name, category, retired_at) "
+                   "VALUES ('102', 'junioren', '2026-01-01T00:00:00+00:00')")
+        db.commit()
+    page = client.get("/papier").get_data(as_text=True)
+    for cp in range(1, 13):
+        assert f"<h1>{'CP 3 · Molen' if cp == 3 else f'CP {cp}'}</h1>" in page
+    assert page.count('class="paper-cp"') == 12
+    assert "14 juni 2026" in page  # day 2
+    assert "Papieren lijsten afdrukken" in client.get("/checkpoints").get_data(as_text=True)
+    client.post("/uitloggen", data={"csrf": t})
+    login(client, "post3")
+    page = client.get("/checkpoint/3/papier").get_data(as_text=True)
+    assert "CP 3 · Molen" in page and "13 juni 2026" in page and "Knopen" in page and "Sanne" in page
+    assert "Anna: notenallergie" in page and "<b>101</b>" in page and "<b>102</b>" not in page
+    assert "window.print()" in page and "Praktijk" in page
+    assert client.get("/checkpoint/4/papier").status_code == 403
+    assert client.get("/papier").status_code == 403
+    login(client, "kijk")
+    assert client.get("/checkpoint/4/papier").status_code == 200
+    assert client.get("/papier").status_code == 403
