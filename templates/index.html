@@ -36,6 +36,7 @@
   {% for cp, d in CHECKPOINTS.items() if d == day %}
   <a class="card" href="{{ url_for('checkpoint', cp=cp) }}">
     <b>{{ cp_label(cp) }}</b>
+    {% set st = cp_status.get(cp) %}{% if st %}<span class="tag {{ 'out' if st.is_open else 'off' }}">{{ 'open' if st.is_open else 'dicht' }}</span>{% endif %}
     <span class="tag">{{ stats[cp].todo }} verwacht</span>
     <span class="tag in">{{ stats[cp].in }} aanwezig</span>
     <span class="tag out">{{ stats[cp].out }} vertrokken</span>

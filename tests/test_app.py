@@ -590,9 +590,12 @@ def test_late_group_alerts_admins_once(client):
         db.commit()
     t = login(client, "admin")
     client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_2": "60"})
-    # Any poll (here by staff) notices the late group and alerts every admin, not staff.
+    # Any poll (here by staff) notices the late group and alerts every admin,
+    # plus the staff of the checkpoint the group walks to (CP 3).
     login(client, "post3")
-    assert client.get("/meldingen/nieuw?na=0").get_json()["items"] == []
+    items = client.get("/meldingen/nieuw?na=0").get_json()["items"]
+    assert len(items) == 1 and "Groep 101 is te laat" in items[0]["text"]
+    assert client.get(items[0]["url"]).headers["Location"].endswith("/checkpoint/3/groep/1")
     login(client, "admin")
     d = client.get("/meldingen/nieuw?na=0").get_json()
     assert len(d["items"]) == 1 and "Groep 101 is te laat" in d["items"][0]["text"]
@@ -606,7 +609,7 @@ def test_late_group_alerts_admins_once(client):
     with wh.app.app_context():
         db = wh.get_db()
         texts = [r[0] for r in db.execute("SELECT u.username FROM notifications n JOIN users u ON u.id = n.user_id")]
-        assert sorted(texts) == ["admin", "admin2"]
+        assert sorted(texts) == ["admin", "admin2", "post3"]
     # Wiping all group data also clears the alerts.
     make_super()
     t = login(client, "admin")
@@ -885,3 +888,126 @@ def test_session_holds_no_piece_of_password_hash(client):
     with wh.app.app_context():
         h = wh.get_db().execute("SELECT password_hash FROM users WHERE username='admin'").fetchone()[0]
     assert mark not in h
+
+
+# --- Agent A: staff tools
+
+def test_coming_your_way_with_eta(client):
+    from datetime import datetime, timedelta, timezone
+    t = login(client, "admin")
+    for name in ("Cees", "Door", "Evi"):
+        client.post("/groepen", data={"csrf": t, "category": "junioren", "hiker_name": [name, "", ""],
+                                      "hiker_comment": ["", "", ""]})
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    ago = lambda m: (now - timedelta(minutes=m)).isoformat()
+    with wh.app.app_context():
+        db = wh.get_db()
+        # 101 left CP 2 20 min ago, 102 40 min ago; 103 left CP 2 and is already at CP 3;
+        # 104 only left CP 1, so it is not coming to CP 3 yet.
+        for gid, cp, m in ((1, 2, 20), (2, 2, 40), (3, 2, 50), (4, 1, 10)):
+            db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (?, ?, ?, ?)",
+                       (gid, cp, ago(m + 5), ago(m)))
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at) VALUES (3, 3, ?)", (ago(5),))
+        db.commit()
+    page = client.get("/checkpoint/3").get_data(as_text=True)
+    assert "Onderweg naar jou (2)" in page
+    # 103 walked CP 2 -> 3 in 45 min, so that average gives an expected time.
+    coming = page.split("Onderweg naar jou")[1].split("</div>")[0]
+    assert coming.index("Groep 102") < coming.index("Groep 101")  # earliest arrival first
+    assert f"verwacht rond <b>{wh.localtime(ago(40 - 45), '%H:%M')}</b>" in coming
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_2": "60"})
+    coming = client.get("/checkpoint/3").get_data(as_text=True).split("Onderweg naar jou")[1].split("</div>")[0]
+    assert f"vertrokken {wh.localtime(ago(20), '%H:%M')} van CP 2" in coming
+    assert f"verwacht rond <b>{wh.localtime(ago(20 - 60), '%H:%M')}</b>" in coming
+    assert "te laat" not in coming
+    # With 5 min expected, 102 (40 min underway > 5 + 30) is late.
+    client.post("/checkpoints", data={"csrf": t, "day1": "7", "day2": "5", "leg_2": "5"})
+    coming = client.get("/checkpoint/3").get_data(as_text=True).split("Onderweg naar jou")[1].split("</div>")[0]
+    assert "te laat" in coming
+    # Nothing comes to CP 1 (first CP of the day): the block is hidden. CP 2 has 104 coming without an ETA.
+    assert "Onderweg naar jou" not in client.get("/checkpoint/1").get_data(as_text=True)
+    coming = client.get("/checkpoint/2").get_data(as_text=True).split("Onderweg naar jou")[1].split("</div>")[0]
+    assert "Groep 104" in coming and "verwacht rond" not in coming
+
+
+def test_broadcast_reaches_the_right_people(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        for name, role, cp, active in [("admin2", "admin", None, 1), ("post4", "staff", 4, 1),
+                                       ("oud3", "staff", 3, 0)]:
+            db.execute("INSERT INTO users (username, password_hash, role, checkpoint, active) VALUES (?, ?, ?, ?, ?)",
+                       (name, "x", role, cp, active))
+        db.commit()
+
+    def got():
+        with wh.app.app_context():
+            return sorted(r[0] for r in wh.get_db().execute(
+                "SELECT u.username FROM notifications n JOIN users u ON u.id = n.user_id"))
+
+    t = login(client, "post3")
+    assert client.get("/bericht").status_code == 403
+    assert client.post("/bericht", data={"csrf": t, "text": "hoi", "target": "posten"}).status_code == 403
+    t = login(client, "kijk")
+    assert client.post("/bericht", data={"csrf": t, "text": "hoi", "target": "posten"}).status_code == 403
+    t = login(client, "admin")
+    r = client.post("/bericht", data={"csrf": t, "text": "Regen op komst", "target": "posten"}, follow_redirects=True)
+    assert "Bericht verstuurd aan 2 personen." in r.get_data(as_text=True)
+    assert got() == ["post3", "post4"]
+    client.post("/bericht", data={"csrf": t, "text": "Lunch", "target": "iedereen"})
+    assert got() == ["admin2", "post3", "post3", "post4", "post4"]  # never the sender
+    client.post("/bericht", data={"csrf": t, "text": "Alleen CP 4", "target": "cp4"})
+    assert got().count("post4") == 3 and got().count("post3") == 2
+    r = client.post("/bericht", data={"csrf": t, "text": "Leeg", "target": "cp7"}, follow_redirects=True)
+    assert "niemand" in r.get_data(as_text=True)
+    client.post("/bericht", data={"csrf": t, "text": "x" * 301, "target": "posten"})
+    client.post("/bericht", data={"csrf": t, "text": "  ", "target": "posten"})
+    client.post("/bericht", data={"csrf": t, "text": "hoi", "target": "cp99"})
+    with wh.app.app_context():
+        db = wh.get_db()
+        assert db.execute("SELECT COUNT(*) FROM broadcasts").fetchone()[0] == 4
+        n = db.execute("SELECT text, link FROM notifications ORDER BY id LIMIT 1").fetchone()
+        assert n["text"] == "Bericht van admin: Regen op komst" and n["link"] == "/meldingen"
+        assert db.execute("SELECT 1 FROM audit_log WHERE action = 'bericht verstuurd aan alle posten: "
+                          "Regen op komst'").fetchone()
+    page = client.get("/bericht").get_data(as_text=True)
+    assert "Alleen CP 4" in page and "posten en beheerders" in page and ">Bericht</a>" in page
+
+
+def test_checkpoint_open_and_close(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("INSERT INTO users (username, password_hash, role) VALUES ('admin2', 'x', 'admin')")
+        db.commit()
+    t = login(client, "post3")
+    page = client.get("/checkpoint/3").get_data(as_text=True)
+    assert "nog niet geopend" in page and "Post openen" in page
+    assert client.post("/checkpoint/4/status", data={"csrf": t, "open": "1"}).status_code == 403
+    client.post("/checkpoint/3/status", data={"csrf": t, "open": "1"})
+    page = client.get("/checkpoint/3").get_data(as_text=True)
+    assert "Post sluiten" in page and "nog 1 groep verwacht. Post toch sluiten?" in page
+    r = client.post("/checkpoint/3/status", data={"csrf": t, "open": "0"}, follow_redirects=True)
+    assert "nog 1 groep verwacht" in r.get_data(as_text=True)
+    with wh.app.app_context():
+        db = wh.get_db()
+        assert db.execute("SELECT is_open FROM checkpoint_status WHERE checkpoint = 3").fetchone()[0] == 0
+        rows = db.execute("SELECT u.username, n.text, n.link FROM notifications n "
+                          "JOIN users u ON u.id = n.user_id ORDER BY u.username").fetchall()
+        assert [r["username"] for r in rows] == ["admin", "admin2"]
+        assert rows[0]["text"] == "CP 3 is gesloten terwijl er nog 1 groepen verwacht worden"
+        assert rows[0]["link"] == "/checkpoint/3"
+        actions = [r[0] for r in db.execute("SELECT action FROM audit_log WHERE username = 'post3'")]
+        assert "CP3 geopend" in actions and any(a.startswith("CP3 gesloten") for a in actions)
+    t = login(client, "kijk")
+    assert client.post("/checkpoint/3/status", data={"csrf": t, "open": "1"}).status_code == 403
+    assert "Post openen" not in client.get("/checkpoint/3").get_data(as_text=True)
+    t = login(client, "admin")
+    page = client.get("/").get_data(as_text=True)
+    assert '<span class="tag off">dicht</span>' in page and ">open</span>" not in page
+    client.post("/checkpoint/5/status", data={"csrf": t, "open": "1"})
+    assert '<span class="tag out">open</span>' in client.get("/").get_data(as_text=True)
+    assert client.post("/checkpoint/5/status", data={"csrf": t, "open": "x"}).status_code == 400
+    # Closing with nobody left to come: no warning for the admins.
+    client.post("/groep/1/uitgevallen", data={"csrf": t})
+    client.post("/checkpoint/5/status", data={"csrf": t, "open": "0"})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 2

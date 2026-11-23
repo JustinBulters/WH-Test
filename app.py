@@ -212,6 +212,21 @@ CREATE TABLE IF NOT EXISTS late_alerts (
     at TEXT NOT NULL,
     PRIMARY KEY (group_id, checkpoint, since)
 );
+-- Messages an admin sent to staff ("Bericht aan iedereen").
+CREATE TABLE IF NOT EXISTS broadcasts (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    sender_id INTEGER REFERENCES users(id),
+    target TEXT NOT NULL,  -- who it went to, as shown on the page, e.g. 'alle posten'
+    text TEXT NOT NULL
+);
+-- Is a checkpoint open or closed? No row: not opened yet.
+CREATE TABLE IF NOT EXISTS checkpoint_status (
+    checkpoint INTEGER PRIMARY KEY,
+    is_open INTEGER NOT NULL,
+    changed_at TEXT NOT NULL,
+    changed_by INTEGER REFERENCES users(id)
+);
 """
 
 
@@ -789,7 +804,7 @@ def late_groups(db):
 
 
 def send_late_alerts(db):
-    """Notify all admins once when a group becomes late on a leg.
+    """Notify all admins, and the staff of the checkpoint the group walks to, once when a group becomes late.
 
     Runs on every notification poll, so it needs no background job: as long as
     anyone has the site open, new late groups are noticed within ~15 seconds.
@@ -804,9 +819,12 @@ def send_late_alerts(db):
         cur = db.execute("INSERT OR IGNORE INTO late_alerts (group_id, checkpoint, since, at) VALUES (?, ?, ?, ?)",
                          (x["id"], x["from"], x["since"], now_utc()))
         if cur.rowcount:
-            notify(db, admins, f"Groep {x['name']} is te laat: al {x['walking']} min onderweg van "
-                               f"{cp_label(x['from'])} naar {cp_label(x['to'])} (verwacht {x['expected']} min)",
-                   url_for("group_link", gid=x["id"]))
+            text = (f"Groep {x['name']} is te laat: al {x['walking']} min onderweg van "
+                    f"{cp_label(x['from'])} naar {cp_label(x['to'])} (verwacht {x['expected']} min)")
+            notify(db, admins, text, url_for("group_link", gid=x["id"]))
+            staff = [r[0] for r in db.execute("SELECT id FROM users WHERE role = 'staff' AND active = 1 "
+                                              "AND checkpoint = ?", (x["to"],))]
+            notify(db, staff, text, url_for("checkpoint_group", cp=x["to"], gid=x["id"]))
     db.commit()
 
 
@@ -832,7 +850,7 @@ def index():
         ") c ON c.group_id = g.id AND c.rn = 1 "
         "ORDER BY g.category, CAST(g.name AS INTEGER)").fetchall()
     return render_template("index.html", stats=stats, total=total, active=active, where=where,
-                           late=late_groups(db), grace=LATE_GRACE)
+                           late=late_groups(db), grace=LATE_GRACE, cp_status=checkpoint_statuses(db))
 
 
 @app.route("/checkpoint/<int:cp>")
@@ -854,7 +872,8 @@ def checkpoint(cp):
         "ORDER BY g.category, CAST(g.name AS INTEGER)", (cp,)).fetchall()
     late = {x["id"]: x for x in late_groups(db) if x["to"] == cp}
     return render_template("checkpoint.html", cp=cp, groups=groups, late=late,
-                           can_edit=can_edit_checkpoint(cp))
+                           can_edit=can_edit_checkpoint(cp), coming=coming_your_way(db, cp, late),
+                           status=checkpoint_statuses(db).get(cp), waiting=still_expected(db, cp))
 
 
 @app.route("/checkpoint/<int:cp>/groep/<int:gid>", methods=["GET", "POST"])
@@ -1048,6 +1067,139 @@ def notifications_read():
                (now_utc(), current_user()["id"]))
     db.commit()
     return redirect(url_for("notifications"))
+
+
+# ------------------------------------------------ staff tools (agent A)
+
+def coming_your_way(db, cp, late=None):
+    """Groups walking towards this checkpoint: they left the previous CP (same day) and are not here yet.
+
+    Each has the check-out time there and, when known, an expected arrival time:
+    check-out + the expected minutes for that leg, or the measured average.
+    """
+    prev = next((p for p, nxt in legs().items() if nxt == cp), None)
+    if prev is None:
+        return []
+    leg = leg_times(db)[prev]
+    minutes = leg["expected"] if leg["expected"] is not None else (leg["avg"] if leg["count"] else None)
+    late = late if late is not None else {x["id"]: x for x in late_groups(db) if x["to"] == cp}
+    out = []
+    for r in db.execute(
+            "SELECT g.id, g.name, g.category, c.checkout_at FROM groups g JOIN ("
+            "  SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id "
+            "    ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC) AS rn FROM checkins"
+            ") c ON c.group_id = g.id AND c.rn = 1 "
+            "WHERE g.retired_at IS NULL AND c.checkout_at IS NOT NULL AND c.checkpoint = ? "
+            "AND NOT EXISTS (SELECT 1 FROM checkins h WHERE h.group_id = g.id AND h.checkpoint = ? "
+            "                AND h.checkin_at IS NOT NULL)", (prev, cp)):
+        eta = None
+        if minutes is not None:
+            eta = (datetime.fromisoformat(r["checkout_at"]) + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        out.append({"id": r["id"], "name": r["name"], "category": r["category"], "from": prev,
+                    "left": r["checkout_at"], "eta": eta, "late": r["id"] in late})
+    # Soonest arrival first; groups without an expected time at the end.
+    return sorted(out, key=lambda x: (x["eta"] is None, x["eta"] or "", int(x["name"]) if x["name"].isdecimal() else 0))
+
+
+def checkpoint_statuses(db):
+    """Checkpoint -> its open/dicht row. A checkpoint without a row has not been opened yet."""
+    return {r["checkpoint"]: r for r in db.execute("SELECT * FROM checkpoint_status")}
+
+
+def still_expected(db, cp):
+    """Groups that still have to come to this checkpoint, plus groups checked in but not yet out."""
+    stats = checkpoint_stats(db)[0][cp]
+    return stats["todo"] + stats["in"]
+
+
+@app.route("/checkpoint/<int:cp>/status", methods=["POST"])
+@login_required("admin", "staff")
+def checkpoint_status(cp):
+    """Staff of this checkpoint (or an admin) mark it open or closed."""
+    check_cp(cp, edit=True)
+    raw = request.form.get("open", "")
+    if raw not in ("0", "1"):
+        abort(400)
+    is_open = int(raw)
+    db = get_db()
+    me = current_user()
+    db.execute("INSERT INTO checkpoint_status (checkpoint, is_open, changed_at, changed_by) VALUES (?, ?, ?, ?) "
+               "ON CONFLICT (checkpoint) DO UPDATE SET is_open = excluded.is_open, "
+               "changed_at = excluded.changed_at, changed_by = excluded.changed_by",
+               (cp, is_open, now_utc(), me["id"]))
+    if is_open:
+        audit(f"CP{cp} geopend")
+        flash(f"{cp_label(cp)} staat nu open.", "ok")
+    else:
+        waiting = still_expected(db, cp)
+        audit(f"CP{cp} gesloten" + (f" ({waiting} groepen nog verwacht)" if waiting else ""))
+        if waiting:
+            admins = [r[0] for r in db.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1")]
+            notify(db, admins, f"{cp_label(cp)} is gesloten terwijl er nog {waiting} groepen verwacht worden",
+                   url_for("checkpoint", cp=cp))
+            flash(f"Let op: er {'wordt' if waiting == 1 else 'worden'} nog {waiting} "
+                  f"groep{'' if waiting == 1 else 'en'} verwacht. De beheerders hebben een melding gekregen.", "warn")
+        else:
+            flash(f"{cp_label(cp)} is gesloten.", "ok")
+    db.commit()
+    return redirect(url_for("checkpoint", cp=cp))
+
+
+BROADCAST_MAX = 300
+
+
+def broadcast_targets():
+    """Who a message can go to: key -> label."""
+    targets = {"posten": "alle posten", "iedereen": "posten en beheerders"}
+    targets.update({f"cp{cp}": cp_label(cp) for cp in CHECKPOINTS})
+    return targets
+
+
+@app.route("/bericht", methods=["GET", "POST"])
+@login_required("admin")
+def broadcast():
+    """Admins send one short message to all checkpoint staff, staff plus admins, or one checkpoint."""
+    db = get_db()
+    me = current_user()
+    targets = broadcast_targets()
+    if request.method == "POST":
+        text = request.form.get("text", "").strip()
+        target = request.form.get("target", "")
+        if not text:
+            flash("Typ een bericht.", "error")
+        elif len(text) > BROADCAST_MAX:
+            flash(f"Een bericht mag hoogstens {BROADCAST_MAX} tekens hebben.", "error")
+        elif target not in targets:
+            flash("Kies aan wie het bericht gaat.", "error")
+        else:
+            if target == "posten":
+                rows = db.execute("SELECT id FROM users WHERE role = 'staff' AND active = 1")
+            elif target == "iedereen":
+                rows = db.execute("SELECT id FROM users WHERE role IN ('staff', 'admin') AND active = 1")
+            else:
+                rows = db.execute("SELECT id FROM users WHERE role = 'staff' AND active = 1 AND checkpoint = ?",
+                                  (int(target[2:]),))
+            ids = [r[0] for r in rows if r[0] != me["id"]]
+            label = targets[target]
+            notify(db, ids, f"Bericht van {me['username']}: {text}", url_for("notifications"))
+            db.execute("INSERT INTO broadcasts (at, sender_id, target, text) VALUES (?, ?, ?, ?)",
+                       (now_utc(), me["id"], label, text))
+            db.commit()
+            audit(f"bericht verstuurd aan {label}: {text[:80]}")
+            if ids:
+                flash(f"Bericht verstuurd aan {len(ids)} {'persoon' if len(ids) == 1 else 'personen'}.", "ok")
+            else:
+                flash(f"Bericht opgeslagen, maar er is niemand bij {label} om het naar te sturen.", "warn")
+            return redirect(url_for("broadcast"))
+        return render_template("broadcast.html", targets=targets, rows=recent_broadcasts(db),
+                               text=text, target=target, max_len=BROADCAST_MAX)
+    return render_template("broadcast.html", targets=targets, rows=recent_broadcasts(db),
+                           text="", target="posten", max_len=BROADCAST_MAX)
+
+
+def recent_broadcasts(db):
+    return db.execute("SELECT b.*, u.username AS sender FROM broadcasts b LEFT JOIN users u ON u.id = b.sender_id "
+                      "ORDER BY b.id DESC LIMIT 20").fetchall()
 
 
 @app.route("/checkpoint/<int:cp>/groep/<int:gid>/<action>", methods=["POST"])
@@ -1629,7 +1781,8 @@ def settings():
                           for t in ("groups", "hikers", "checkins", "scores")}
                 for table in ("late_alerts", "score_requests", "scores", "checkins", "hikers", "groups"):
                     db.execute(f"DELETE FROM {table}")
-                db.execute("DELETE FROM notifications WHERE link LIKE '/verzoeken%' OR link LIKE '/g/%'")
+                db.execute("DELETE FROM notifications WHERE link LIKE '/verzoeken%' OR link LIKE '/g/%' "
+                           "OR link LIKE '/checkpoint/%/groep/%'")
                 db.commit()
                 audit("alle groepsdata gewist: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
                 flash(f"Alle groepsdata is gewist ({counts['groups']} groepen, {counts['hikers']} wandelaars). "

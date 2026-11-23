@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% block title %}Bericht{% endblock %}
+{% block content %}
+<h1>Bericht aan iedereen</h1>
+<p class="muted">Stuur een kort bericht. Het verschijnt bij de ontvangers als melding (de bel) en als pop-up.</p>
+<form method="post" class="panel">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="row">
+    <label>Aan
+      <select name="target">
+        {% for key, label in targets.items() %}<option value="{{ key }}"{% if key == target %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+  <label for="bericht-text" class="muted">Bericht (hoogstens {{ max_len }} tekens)</label>
+  <textarea id="bericht-text" name="text" rows="3" maxlength="{{ max_len }}" required>{{ text }}</textarea>
+  <div class="actions"><button>Versturen</button></div>
+</form>
+<h2>Laatst verstuurd</h2>
+<div class="panel"><ul class="people notes">
+{% for b in rows %}
+<li>{{ b.text }}<br><span class="muted">{{ b.at|localtime }} · {{ b.sender or '?' }} → {{ b.target }}</span></li>
+{% else %}<li class="muted">Nog geen berichten verstuurd.</li>{% endfor %}
+</ul></div>
+{% endblock %}

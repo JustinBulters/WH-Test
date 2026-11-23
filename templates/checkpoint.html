@@ -3,7 +3,30 @@
 <h1>Checkpoint {{ cp }}{% if cp_names().get(cp) %} · {{ cp_names()[cp] }}{% endif %} <small>· dag {{ CHECKPOINTS[cp] }}</small></h1>
 {% set info = cp_details(cp) %}
 {% if info.theme or info.crew %}<div class="panel cp-info">{% if info.theme %}<div><span class="muted">Thema</span><b>{{ info.theme }}</b></div>{% endif %}{% if info.crew %}<div><span class="muted">Bemanning</span><b>{{ info.crew }}</b></div>{% endif %}</div>{% endif %}
+<div class="panel cp-status">
+  <span>Post: {% if status is none %}<span class="tag">nog niet geopend</span>{% elif status.is_open %}<span class="tag out">open</span>{% else %}<span class="tag off">dicht</span>{% endif %}
+  {% if status %}<span class="muted">sinds {{ status.changed_at|localtime('%H:%M') }}</span>{% endif %}</span>
+  {% if can_edit %}
+  {% set closing = status is not none and status.is_open %}
+  <form class="inline" method="post" action="{{ url_for('checkpoint_status', cp=cp) }}"{% if closing and waiting %} onsubmit="return confirm('Er {{ 'wordt' if waiting == 1 else 'worden' }} nog {{ waiting }} groep{{ '' if waiting == 1 else 'en' }} verwacht. Post toch sluiten?')"{% endif %}>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="open" value="{{ 0 if closing else 1 }}">
+    <button{% if closing %} class="alt"{% endif %}>{{ 'Post sluiten' if closing else 'Post openen' }}</button>
+  </form>
+  {% endif %}
+</div>
 {% set action = url_for('checkpoint', cp=cp) %}{% include "_lookup.html" %}
+{% if coming %}
+<div class="panel coming">
+  <h2>Onderweg naar jou ({{ coming|length }})</h2>
+  <ul class="people">
+  {% for x in coming %}
+    <li><a href="{{ url_for('checkpoint_group', cp=cp, gid=x.id) }}"><b>Groep {{ x.name }}</b></a> · {{ x.category|capitalize }}{% if x.late %} <span class="tag off">te laat</span>{% endif %}<br>
+      <span class="muted">vertrokken {{ x.left|localtime('%H:%M') }} van CP {{ x.from }}{% if x.eta %} · verwacht rond <b>{{ x.eta|localtime('%H:%M') }}</b>{% endif %}</span></li>
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
 <div class="wrap"><table>
 <tr><th>Groep</th><th>Wandelaars</th><th>Status</th><th></th></tr>
 {% for g in groups %}
