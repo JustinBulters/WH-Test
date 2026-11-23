@@ -272,6 +272,9 @@ def init_db():
         db.execute("ALTER TABLE groups ADD COLUMN retired_note TEXT NOT NULL DEFAULT ''")
     if "retired_reason" not in gcols:
         db.execute("ALTER TABLE groups ADD COLUMN retired_reason TEXT NOT NULL DEFAULT ''")
+    if "code" not in gcols:  # secret code for the hikers' status page; made when first needed
+        db.execute("ALTER TABLE groups ADD COLUMN code TEXT")
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS groups_code ON groups(code)")
     # Hikers no longer have their own number: the group has it.
     if "number" in {r["name"] for r in db.execute("PRAGMA table_info(hikers)")}:
         db.commit()
@@ -1459,6 +1462,195 @@ def minutes_between(start, end):
     return round((datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds() / 60)
 
 
+# ------------------------------------------------ statistics and hiker status page (agent D)
+
+# A checkpoint whose average total (quiz + practical) differs more than this from the
+# average over all checkpoints is marked "strenger" or "milder".
+STRICT_MARGIN = 1.5
+
+
+@app.template_filter("comma")
+def comma(value, digits=1):
+    """Dutch decimals: 7.5 -> '7,5'. Empty values show as a dash."""
+    if value is None:
+        return "–"
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
+def leg_stats(db):
+    """Per leg: expected and average minutes (from leg_times), plus the fastest and slowest group."""
+    out = leg_times(db)
+    walked = {}
+    for r in db.execute("SELECT a.checkpoint AS cp, g.name, a.checkout_at AS start, b.checkin_at AS end "
+                        "FROM checkins a JOIN checkins b ON b.group_id = a.group_id "
+                        "AND b.checkpoint = a.checkpoint + 1 JOIN groups g ON g.id = a.group_id "
+                        "WHERE a.checkout_at IS NOT NULL AND b.checkin_at IS NOT NULL"):
+        m = minutes_between(r["start"], r["end"])
+        if r["cp"] in out and m is not None and m >= 0:
+            walked.setdefault(r["cp"], []).append((m, r["name"]))
+    for cp, leg in out.items():
+        times = walked.get(cp, [])
+        leg["fastest"] = min(times, default=None)
+        leg["slowest"] = max(times, default=None)
+    return out
+
+
+def checkpoint_score_stats(db):
+    """Per checkpoint: groups checked in, scores and averages, plus a 'strenger'/'milder' tag."""
+    out = {cp: {"checked_in": 0, "scores": 0, "quiz": None, "practical": None, "total": None, "tag": None}
+           for cp in CHECKPOINTS}
+    for r in db.execute("SELECT checkpoint, COUNT(*) FROM checkins WHERE checkin_at IS NOT NULL "
+                        "GROUP BY checkpoint"):
+        if r[0] in out:
+            out[r[0]]["checked_in"] = r[1]
+    for r in db.execute(
+            "SELECT checkpoint, COUNT(*) AS n, AVG(quiz) AS quiz, AVG(practical) AS practical, "
+            # The total only counts scores where both parts are filled in.
+            "AVG(CASE WHEN quiz IS NOT NULL AND practical IS NOT NULL THEN quiz + practical END) AS total "
+            "FROM scores WHERE quiz IS NOT NULL OR practical IS NOT NULL GROUP BY checkpoint"):
+        if r["checkpoint"] in out:
+            out[r["checkpoint"]].update(scores=r["n"], quiz=r["quiz"], practical=r["practical"], total=r["total"])
+    totals = [s["total"] for s in out.values() if s["total"] is not None]
+    overall = sum(totals) / len(totals) if len(totals) > 1 else None
+    for s in out.values():
+        if overall is not None and s["total"] is not None and abs(s["total"] - overall) > STRICT_MARGIN:
+            s["tag"] = "milder" if s["total"] > overall else "strenger"
+    return out, overall
+
+
+def category_stats(db):
+    """Per category: groups, dropped out, merged and the average total score."""
+    out = {cat: {"groups": 0, "retired": 0, "merged": 0, "avg": None} for cat in CATEGORIES}
+    for r in db.execute(
+            # A merged group (retired_note set) is not a dropout: its hikers walk on in another
+            # group, so it is counted apart and left out of the average.
+            "SELECT category, COUNT(*) AS groups, "
+            "SUM(retired_at IS NOT NULL AND retired_note = '') AS retired, "
+            "SUM(retired_at IS NOT NULL AND retired_note != '') AS merged, "
+            "AVG(CASE WHEN retired_at IS NULL OR retired_note = '' THEN "
+            "    (SELECT COALESCE(SUM(quiz), 0) + COALESCE(SUM(practical), 0) FROM scores s "
+            "     WHERE s.group_id = g.id) END) AS avg "
+            "FROM groups g GROUP BY category"):
+        if r["category"] in out:
+            out[r["category"]].update(groups=r["groups"], retired=r["retired"], merged=r["merged"], avg=r["avg"])
+    return out
+
+
+@app.route("/statistieken")
+@login_required("admin", "viewer")
+def statistics():
+    db = get_db()
+    cps, overall = checkpoint_score_stats(db)
+    dropouts = db.execute("SELECT retired_cp AS cp, COUNT(*) AS n FROM groups "
+                          "WHERE retired_at IS NOT NULL AND retired_note = '' "
+                          "GROUP BY retired_cp ORDER BY retired_cp IS NULL, retired_cp").fetchall()
+    return render_template("statistics.html", legs=leg_stats(db), cps=cps, overall=overall,
+                           cats=category_stats(db), dropouts=dropouts, margin=STRICT_MARGIN)
+
+
+STATUS_OPS = ("status_page", "status_rank", "status_codes_renew")
+STATUS_LABELS = {"status_page": "statuspagina voor wandelaars",
+                 "status_rank": "plaats en punten op statuspagina"}
+
+
+def status_setting_on(key):
+    """Is the hikers' status page (status_page) or showing the rank there (status_rank) on? Default off."""
+    return get_setting(key, "0") == "1"
+
+
+@app.context_processor
+def inject_status_settings():
+    return {"status_setting_on": status_setting_on}
+
+
+def group_code(db, gid):
+    """The secret status-page code of a group; made on first use (groups can be created anywhere)."""
+    for _ in range(10):
+        row = db.execute("SELECT code FROM groups WHERE id = ?", (gid,)).fetchone()
+        if row is None:
+            return None
+        if row["code"]:
+            return row["code"]
+        try:
+            db.execute("UPDATE groups SET code = ? WHERE id = ? AND code IS NULL", (secrets.token_urlsafe(9), gid))
+            db.commit()
+        except sqlite3.IntegrityError:  # the same code already exists (very unlikely): try another
+            db.rollback()
+    raise RuntimeError("Kon geen unieke statuscode maken.")
+
+
+def status_card_qr(db, base, gid):
+    """Small QR for the group card that opens the status page, or None when that page is off."""
+    if not status_setting_on("status_page"):
+        return None
+    qr = segno.make(base + url_for("hiker_status", code=group_code(db, gid)), error="m")
+    return Markup(qr.svg_inline(scale=3, border=2, omitsize=True))
+
+
+def status_settings_op(db, op):
+    """Superadmin settings for the status page (called from the settings route)."""
+    if op == "status_codes_renew":
+        db.execute("UPDATE groups SET code = NULL")
+        db.commit()
+        ids = [r[0] for r in db.execute("SELECT id FROM groups")]
+        for gid in ids:
+            group_code(db, gid)
+        audit(f"alle statuscodes vernieuwd ({len(ids)} groepen); oude kaarten werken niet meer")
+        flash(f"Nieuwe statuscodes gemaakt voor {len(ids)} groepen. Print de kaarten opnieuw.", "ok")
+        return
+    on = request.form.get("value") == "1"
+    set_setting(db, op, "1" if on else "0")
+    db.commit()
+    audit(f"{STATUS_LABELS[op]} {'aangezet' if on else 'uitgezet'}")
+    flash(f"{STATUS_LABELS[op].capitalize()} staat nu {'aan' if on else 'uit'}.", "ok")
+
+
+def hiker_state(db, group):
+    """Where a group is now, in words for the hikers themselves."""
+    if group["retired_at"]:
+        return "Uitgevallen"
+    last = db.execute("SELECT checkpoint, checkin_at, checkout_at FROM checkins WHERE group_id = ? "
+                      "ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC LIMIT 1", (group["id"],)).fetchone()
+    if last is None:
+        return "Nog niet gestart"
+    cp = last["checkpoint"]
+    if not last["checkout_at"]:
+        return f"Op CP {cp}"
+    if cp == max(CHECKPOINTS):
+        return "Binnen"
+    if cp == checkpoints_per_day()[0]:
+        return "Dag 1 klaar"
+    return f"Onderweg naar CP {cp + 1} (vertrokken {localtime(last['checkout_at'], '%H:%M')})"
+
+
+@app.route("/status/<code>")
+def hiker_status(code):
+    """Public page for the hikers of one group: no login, only what is safe to show.
+
+    Never shows names, comments, phone numbers, staff or other groups. A switched-off
+    feature and an unknown code look exactly the same.
+    """
+    db = get_db()
+    group = None
+    if status_setting_on("status_page") and code:
+        group = db.execute("SELECT * FROM groups WHERE code = ?", (code,)).fetchone()
+    if group is None:
+        resp = app.make_response((render_template("status.html", info=None, bare=True), 404))
+    else:
+        done = db.execute("SELECT COUNT(*) FROM checkins WHERE group_id = ? AND checkout_at IS NOT NULL",
+                          (group["id"],)).fetchone()[0]
+        info = {"name": group["name"], "category": group["category"], "state": hiker_state(db, group),
+                "done": done, "total": len(CHECKPOINTS), "now": localtime(now_utc(), "%H:%M")}
+        if status_setting_on("status_rank"):
+            rows = ranking(db)[group["category"]]
+            me = next(r for r in rows if r["id"] == group["id"])
+            info.update(points=me["quiz"] + me["practical"], place=me["place"], of=len(rows))
+        resp = app.make_response(render_template("status.html", info=info, bare=True))
+    resp.headers["X-Robots-Tag"] = "noindex"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 # ------------------------------------------------------- lookup, QR cards
 
 def group_page_for(user, gid):
@@ -1519,7 +1711,8 @@ def group_cards():
             "SELECT name FROM hikers WHERE group_id = ? ORDER BY id", (gr["id"],))]
         qr = segno.make(base + url_for("group_qr", number=int(gr["name"])), error="m")
         cards.append({"group": gr, "names": names,
-                      "qr": Markup(qr.svg_inline(scale=4, border=2, omitsize=True))})
+                      "qr": Markup(qr.svg_inline(scale=4, border=2, omitsize=True)),
+                      "status_qr": status_card_qr(db, base, gr["id"])})
     return render_template("cards.html", cards=cards, base=base)
 
 
@@ -1893,6 +2086,8 @@ def settings():
             flash("Startdatum opgeslagen." if value else "Startdatum verwijderd.", "ok")
         elif op == "backup":
             settings_backup_now()
+        elif op in STATUS_OPS:
+            status_settings_op(db, op)
         elif op == "wipe":
             if request.form.get("confirm", "").strip().upper() != "WISSEN":
                 flash("Typ WISSEN om te bevestigen. Er is niets gewist.", "error")

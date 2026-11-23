@@ -1,0 +1,45 @@
+{% extends "base.html" %}{% block title %}Statistieken{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('results') }}">← Uitslag</a></p>
+<h1>Statistieken</h1>
+
+<h2>Looptijden per etappe</h2>
+<div class="wrap"><table>
+<tr><th>Etappe</th><th>Verwacht</th><th>Gemeten gemiddelde</th><th>Groepen</th><th>Snelste</th><th>Langzaamste</th></tr>
+{% for cp, leg in legs.items() %}
+<tr><td>CP {{ cp }} → CP {{ leg.to }}</td>
+<td>{% if leg.expected is not none %}{{ leg.expected }} min{% else %}<span class="muted">–</span>{% endif %}</td>
+<td>{% if leg.avg is not none %}{{ leg.avg }} min{% else %}<span class="muted">–</span>{% endif %}</td>
+<td>{{ leg.count }}</td>
+<td>{% if leg.fastest %}groep {{ leg.fastest[1] }} ({{ leg.fastest[0] }} min){% else %}<span class="muted">–</span>{% endif %}</td>
+<td>{% if leg.slowest %}groep {{ leg.slowest[1] }} ({{ leg.slowest[0] }} min){% else %}<span class="muted">–</span>{% endif %}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">Geen etappes.</td></tr>{% endfor %}
+</table></div>
+
+<h2>Per checkpoint</h2>
+<div class="wrap"><table>
+<tr><th>Checkpoint</th><th>Ingecheckt</th><th>Scores</th><th>Gem. quiz</th><th>Gem. praktijk</th><th>Gem. totaal</th></tr>
+{% for cp, s in cps.items() %}
+<tr><td>{{ cp_label(cp) }}</td><td>{{ s.checked_in }}</td><td>{{ s.scores }}</td>
+<td>{{ s.quiz|comma }}</td><td>{{ s.practical|comma }}</td>
+<td>{{ s.total|comma }}{% if s.tag %} <span class="tag {{ 'off' if s.tag == 'strenger' else 'out' }}">{{ s.tag }}</span>{% endif %}</td></tr>
+{% endfor %}
+</table></div>
+<p class="muted">{% if overall is not none %}Gemiddeld totaal over alle checkpoints: {{ overall|comma }}. {% endif %}Een checkpoint dat meer dan {{ margin|comma }} punt afwijkt van dat gemiddelde heet <b>strenger</b> (lager) of <b>milder</b> (hoger).</p>
+
+<h2>Per categorie</h2>
+<div class="wrap"><table>
+<tr><th>Categorie</th><th>Groepen</th><th>Uitgevallen</th><th>Samengevoegd</th><th>Gem. totaalscore</th></tr>
+{% for cat, c in cats.items() %}
+<tr><td>{{ cat|capitalize }}</td><td>{{ c.groups }}</td><td>{{ c.retired }}</td><td>{{ c.merged }}</td><td>{{ c.avg|comma }}</td></tr>
+{% endfor %}
+</table></div>
+
+<h2>Uitvallers per checkpoint</h2>
+<div class="wrap"><table>
+<tr><th>Checkpoint</th><th>Uitgevallen groepen</th></tr>
+{% for d in dropouts %}
+<tr><td>{% if d.cp %}{{ cp_label(d.cp) }}{% else %}<span class="muted">onbekend</span>{% endif %}</td><td>{{ d.n }}</td></tr>
+{% else %}<tr><td colspan="2" class="muted">Nog geen groepen uitgevallen.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

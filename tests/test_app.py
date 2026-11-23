@@ -1348,3 +1348,115 @@ def test_paper_sheets(client):
     login(client, "kijk")
     assert client.get("/checkpoint/4/papier").status_code == 200
     assert client.get("/papier").status_code == 403
+# --- Agent D: statistics and hiker status page
+
+def test_statistics_page(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("INSERT INTO groups (name, category, retired_at, retired_cp) "
+                   "VALUES ('201', 'senioren', '2026-05-01T10:00:00+00:00', 2)")
+        db.execute("INSERT INTO settings (key, value) VALUES ('leg_1', '20')")
+        db.executemany("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (?, ?, ?, ?)", [
+            (1, 1, "2026-05-01T08:00:00+00:00", "2026-05-01T08:10:00+00:00"),
+            (1, 2, "2026-05-01T08:35:00+00:00", None),   # 25 min
+            (2, 1, "2026-05-01T08:00:00+00:00", "2026-05-01T08:05:00+00:00"),
+            (2, 2, "2026-05-01T08:45:00+00:00", None)])  # 40 min
+        db.executemany("INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at) "
+                       "VALUES (?, ?, ?, ?, '2026-05-01T09:00:00+00:00')",
+                       [(1, 1, 9, 9), (2, 1, 9, 9), (1, 2, 5, 5), (1, 3, 7, 7), (2, 3, 7, 8)])
+        db.commit()
+    login(client, "kijk")
+    page = client.get("/statistieken").get_data(as_text=True)
+    assert "CP 1 → CP 2" in page and "20 min" in page and "32 min" in page  # expected, average (25+40)/2 rounded
+    assert "groep 101 (25 min)" in page and "groep 201 (40 min)" in page
+    assert "18,0" in page and "milder" in page and "strenger" in page  # CP1 18, CP2 10, CP3 14,5
+    assert "<td>42,0</td>" in page  # junioren: group 101 has 9+9+5+5+7+7 points
+    assert "Uitvallers per checkpoint" in page and "Anna" not in page
+    assert 'href="/statistieken"' in client.get("/uitslag").get_data(as_text=True)
+    login(client, "post3")
+    assert client.get("/statistieken").status_code == 403
+
+
+def status_code_of(gid=1):
+    with wh.app.app_context():
+        return wh.group_code(wh.get_db(), gid)
+
+
+def test_status_page_off_unknown_and_private(client):
+    make_super()
+    code = status_code_of()
+    assert code and status_code_of() == code  # made once, then kept
+    anon = wh.app.test_client()
+    assert anon.get(f"/status/{code}").status_code == 404  # off by default
+    t = login(client, "admin")
+    client.post("/instellingen", data={"csrf": t, "op": "status_page", "value": "1"})
+    r = anon.get(f"/status/{code}")
+    page = r.get_data(as_text=True)
+    assert r.status_code == 200 and "Groep 101" in page and "Nog niet gestart" in page
+    assert 'name="robots" content="noindex"' in page and 'content="60"' in page
+    assert "Anna" not in page and "Bram" not in page and "notenallergie" not in page
+    assert "punten" not in page  # rank is off
+    off = anon.get("/status/onbekend")
+    assert off.status_code == 404 and "Anna" not in off.get_data(as_text=True)
+    client.post("/checkpoint/1/groep/1/in", data={"csrf": t})
+    assert "Op CP 1" in anon.get(f"/status/{code}").get_data(as_text=True)
+    client.post("/checkpoint/1/groep/1/uit", data={"csrf": t})
+    assert "Onderweg naar CP 2 (vertrokken" in anon.get(f"/status/{code}").get_data(as_text=True)
+    client.post("/checkpoint/1/groep/1", data={"csrf": t, "quiz_1": "8", "practical_1": "6"})
+    client.post("/instellingen", data={"csrf": t, "op": "status_rank", "value": "1"})
+    page = anon.get(f"/status/{code}").get_data(as_text=True)
+    assert "<b>14</b> punten" in page and "1e</b> van 1" in page and "1 van 12 checkpoints" in page
+    client.post("/groep/1/uitgevallen", data={"csrf": t})
+    assert "Uitgevallen" in anon.get(f"/status/{code}").get_data(as_text=True)
+    with wh.app.app_context():
+        db = wh.get_db()
+        assert db.execute("SELECT COUNT(*) FROM audit_log WHERE path LIKE '/status/%'").fetchone()[0] == 0
+        actions = [r[0] for r in db.execute("SELECT action FROM audit_log")]
+        assert "statuspagina voor wandelaars aangezet" in actions
+        assert "plaats en punten op statuspagina aangezet" in actions
+    # Switching it off again hides the page.
+    client.post("/instellingen", data={"csrf": t, "op": "status_page", "value": "0"})
+    assert anon.get(f"/status/{code}").status_code == 404
+
+
+def test_status_codes_renew_and_wipe(client):
+    make_super()
+    t = login(client, "admin")
+    client.post("/instellingen", data={"csrf": t, "op": "status_page", "value": "1"})
+    old = status_code_of()
+    anon = wh.app.test_client()
+    assert anon.get(f"/status/{old}").status_code == 200
+    client.post("/instellingen", data={"csrf": t, "op": "status_codes_renew"})
+    new = status_code_of()
+    assert new and new != old
+    assert anon.get(f"/status/{old}").status_code == 404
+    assert anon.get(f"/status/{new}").status_code == 200
+    client.post("/instellingen", data={"csrf": t, "op": "wipe", "confirm": "WISSEN"})
+    assert anon.get(f"/status/{new}").status_code == 404
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM groups WHERE code IS NOT NULL").fetchone()[0] == 0
+
+
+def test_status_settings_superadmin_only(client):
+    t = login(client, "admin")  # plain admin
+    for op in ("status_page", "status_rank", "status_codes_renew"):
+        assert client.post("/instellingen", data={"csrf": t, "op": op, "value": "1"}).status_code == 403
+    t = login(client, "post3")
+    assert client.post("/instellingen", data={"csrf": t, "op": "status_page", "value": "1"}).status_code == 403
+    with wh.app.app_context():
+        assert wh.get_setting("status_page") is None and wh.get_setting("status_rank") is None
+    make_super()
+    login(client, "admin")
+    assert "Statuspagina voor wandelaars" in client.get("/instellingen").get_data(as_text=True)
+
+
+def test_cards_show_status_qr_only_when_on(client):
+    make_super()
+    t = login(client, "admin")
+    page = client.get("/groepen/kaarten").get_data(as_text=True)
+    assert "Volg jullie groep" not in page and "qr-status" not in page and "<svg" in page
+    client.post("/instellingen", data={"csrf": t, "op": "status_page", "value": "1"})
+    page = client.get("/groepen/kaarten").get_data(as_text=True)
+    assert "Volg jullie groep" in page and "Voor de posten" in page and page.count('class="qr-status"><svg') == 1
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT code FROM groups WHERE id = 1").fetchone()[0]
