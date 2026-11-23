@@ -858,3 +858,30 @@ def test_max_hikers_enforced_on_create(client):
                                   "hiker_name": ["A", "B", "C", "D"], "hiker_comment": ["", "", "", ""]})
     with wh.app.app_context():
         assert wh.get_db().execute("SELECT COUNT(*) FROM groups WHERE category='senioren'").fetchone()[0] == 0
+
+
+def test_lockout_does_not_block_other_addresses(client):
+    for _ in range(wh.LOGIN_MAX_PER_USER):
+        client.post("/inloggen", data={"username": "post3", "password": "fout", "csrf": csrf(client)},
+                    environ_base={"REMOTE_ADDR": "203.0.113.7"})
+    # The real staff member on another address can still log in.
+    other = wh.app.test_client()
+    r = other.post("/inloggen", data={"username": "post3", "password": "geheim123", "csrf": csrf(other)},
+                   environ_base={"REMOTE_ADDR": "198.51.100.2"})
+    assert r.status_code == 302
+
+
+def test_security_headers(client):
+    r = client.get("/inloggen")
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
+
+def test_session_holds_no_piece_of_password_hash(client):
+    login(client, "admin")
+    with client.session_transaction() as s:
+        mark = s["pw"]
+    with wh.app.app_context():
+        h = wh.get_db().execute("SELECT password_hash FROM users WHERE username='admin'").fetchone()[0]
+    assert mark not in h

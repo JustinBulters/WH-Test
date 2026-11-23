@@ -3,6 +3,8 @@
 Lightweight Flask + SQLite app with server-rendered pages and no JavaScript,
 so it stays usable on phones with poor signal. UI text is Dutch.
 """
+import hashlib
+import hmac
 import os
 import secrets
 import sqlite3
@@ -90,7 +92,22 @@ def _secret_key():
 app.secret_key = _secret_key()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   # Behind HTTPS (Render sets RENDER; elsewhere set WH_HTTPS=1) only send the cookie over HTTPS.
-                  SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER") or os.environ.get("WH_HTTPS")))
+                  SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER") or os.environ.get("WH_HTTPS")),
+                  # A login ends after this long; covers the two hike days with room to spare.
+                  PERMANENT_SESSION_LIFETIME=timedelta(days=4))
+
+
+@app.after_request
+def security_headers(response):
+    """Tell browsers to protect the pages: no showing them inside another site, no guessing types."""
+    h = response.headers
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("Referrer-Policy", "same-origin")
+    if app.config["SESSION_COOKIE_SECURE"]:
+        h.setdefault("Strict-Transport-Security", "max-age=31536000")  # always use https:// from now on
+    return response
 
 
 # ---------------------------------------------------------------- database
@@ -342,8 +359,12 @@ def current_user():
 
 
 def password_mark(user):
-    """A short piece of the password hash, kept in the session to notice password changes."""
-    return user["password_hash"][-16:]
+    """A fingerprint of the password, kept in the session to notice password changes.
+
+    The session cookie is signed but readable, so it holds a keyed hash of the password
+    hash, never a piece of the password hash itself.
+    """
+    return hmac.new(app.secret_key.encode(), user["password_hash"].encode(), hashlib.sha256).hexdigest()[:32]
 
 
 def audit(action):
@@ -526,16 +547,20 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         if too_many_login_failures(username):
-            g.audit_username = username
-            audit("inloggen geblokkeerd: te veel mislukte pogingen")
+            # Not written to the logbook: a flood of blocked tries would only fill the database.
             flash(f"Te veel mislukte pogingen. Probeer het over {LOGIN_LOCK_MINUTES} minuten opnieuw.", "error")
             return render_template("login.html"), 429
         user = get_db().execute(
             # Usernames are not case sensitive; an exact match wins if two only differ in case.
             "SELECT * FROM users WHERE username = ? COLLATE NOCASE AND active = 1 "
             "ORDER BY username = ? DESC LIMIT 1", (username, username)).fetchone()
-        if user and check_password_hash(user["password_hash"], request.form.get("password", "")):
+        # Always check a password, also for an unknown name, so the answer takes equally long
+        # and nobody can tell from the timing which usernames exist.
+        ok = check_password_hash(user["password_hash"] if user else DUMMY_HASH,
+                                 request.form.get("password", ""))
+        if user and ok:
             session.clear()
+            session.permanent = True  # survives closing the browser, so offline taps can still be sent
             session["user_id"] = user["id"]
             session["pw"] = password_mark(user)
             g.user = user
@@ -549,19 +574,32 @@ def login():
 
 
 # Failed logins: after this many in LOGIN_LOCK_MINUTES, logging in is paused.
-LOGIN_MAX_PER_USER = 10
-LOGIN_MAX_PER_IP = 30  # higher: many phones can share one address
+LOGIN_MAX_PER_USER = 10  # per username *from one address*
+LOGIN_MAX_PER_IP = 30    # per address, all usernames together (only with real addresses)
 LOGIN_LOCK_MINUTES = 15
+DUMMY_HASH = generate_password_hash("geen-echt-wachtwoord")
 
 
 def too_many_login_failures(username):
+    """Too many wrong passwords from this address.
+
+    Counted per username *and* address, so someone elsewhere cannot lock a staff member
+    out by typing wrong passwords for their name. The per-address limit only works when
+    the site sees real addresses (WH_PROXIES behind HAProxy); otherwise every visitor
+    seems to come from the proxy, and that limit would block everybody at once.
+    """
     since = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_LOCK_MINUTES)).isoformat(timespec="seconds")
     db = get_db()
     per_user = db.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'mislukte inlogpoging' AND at > ? "
-                          "AND username = ? COLLATE NOCASE", (since, username)).fetchone()[0]
+                          "AND username = ? COLLATE NOCASE AND ip IS ?",
+                          (since, username, request.remote_addr)).fetchone()[0]
+    if per_user >= LOGIN_MAX_PER_USER:
+        return True
+    if not _proxies:
+        return False
     per_ip = db.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'mislukte inlogpoging' AND at > ? "
                         "AND ip = ?", (since, request.remote_addr)).fetchone()[0]
-    return per_user >= LOGIN_MAX_PER_USER or per_ip >= LOGIN_MAX_PER_IP
+    return per_ip >= LOGIN_MAX_PER_IP
 
 
 @app.route("/uitloggen", methods=["POST"])
@@ -598,7 +636,7 @@ def profile():
                 new_hash = generate_password_hash(new)
                 db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
                 db.commit()
-                session["pw"] = new_hash[-16:]  # stay logged in here; other phones are logged out
+                session["pw"] = password_mark({"password_hash": new_hash})  # stay logged in here only
                 audit("eigen wachtwoord gewijzigd")
                 flash("Wachtwoord gewijzigd.", "ok")
         return redirect(url_for("profile"))
