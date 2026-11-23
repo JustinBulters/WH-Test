@@ -19,7 +19,7 @@
   </td>
   <td>
     {% if can_edit and not g.checkout_at and not g.retired_at %}
-    <form class="inline" method="post" action="{{ url_for('checkpoint_stamp', cp=cp, gid=g.id, action='uit' if g.checkin_at else 'in') }}">
+    <form class="inline" method="post" data-group="{{ g.name }}" action="{{ url_for('checkpoint_stamp', cp=cp, gid=g.id, action='uit' if g.checkin_at else 'in') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button {% if g.checkin_at %}class="alt"{% endif %}>{{ 'Uitchecken' if g.checkin_at else 'Inchecken' }}</button>
     </form>
