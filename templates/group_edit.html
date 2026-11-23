@@ -45,8 +45,9 @@
 </fieldset>
 
 {% if admin and not group.retired_at %}
-<form method="post" action="{{ url_for('group_retire', gid=group.id) }}" class="actions" style="margin:0 0 1rem">
+<form method="post" action="{{ url_for('group_retire', gid=group.id) }}" class="retire-form" style="margin:0 0 1rem">
   <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+  {% include "_retire_reason.html" %}
   <button class="stop">Uitgevallen</button>
   <span class="muted">Gebruik dit als de groep niet verder kan.</span>
 </form>

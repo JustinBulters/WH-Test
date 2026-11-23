@@ -197,3 +197,29 @@ fieldset.danger-zone legend{color:var(--red)}
 .toast button{min-height:0;padding:.1rem .5rem;font-size:1.2rem;line-height:1}
 .toast.fade{opacity:0}
 @keyframes toast-in{from{transform:translateY(1rem);opacity:0}to{transform:none;opacity:1}}
+/* agent C */
+.paper{background:#fff;color:#000;padding:1rem;border-radius:8px}
+.paper h1{color:#000;margin:.2rem 0}
+.paper-tools button{margin-right:.5rem}
+.paper-meta,.paper-foot{color:#000;font-size:.9rem}
+.paper table{width:100%;border-collapse:collapse;background:#fff}
+.paper th,.paper td{border:1px solid #000;padding:.35rem .4rem;color:#000;background:#fff;text-align:left;vertical-align:top}
+.paper td.box{min-width:4.5rem;height:2.2rem}
+.paper td.box.small{min-width:3rem}
+.paper td.note{font-size:.85rem}
+.paper-cp{overflow-x:auto;break-after:page;page-break-after:always}
+.paper-cp:last-child{break-after:auto;page-break-after:auto}
+.paper-cp + .paper-cp{margin-top:2rem}
+.retire-form .row select,.retire-form .row input{min-width:10rem}
+@media print{
+  @page{size:A4;margin:12mm}
+  main.bare{padding:0}
+  .paper{padding:0;border-radius:0}
+  .paper-cp{overflow:visible}
+  .paper-cp + .paper-cp{margin-top:0}
+  .paper tr{break-inside:avoid}
+}
+.gdot{display:inline-block;width:.9rem;height:.9rem;border-radius:50%;background:#2e8b57;border:2px solid #fff;box-shadow:0 0 0 1px #999}
+.gdot.late{background:#c2413b}
+.gtoggle{display:inline-flex;align-items:center;gap:.35rem;font-weight:600;color:var(--text)}
+.gtoggle input{min-height:0;accent-color:var(--brand)}

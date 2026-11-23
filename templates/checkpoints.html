@@ -1,6 +1,7 @@
 {% extends "base.html" %}{% block title %}Checkpoints{% endblock %}
 {% block content %}
 <h1>Checkpoints</h1>
+<p><a class="btn alt" href="{{ url_for('paper_all') }}">Papieren lijsten afdrukken</a> <span class="muted">Per checkpoint een lijst om op papier in te vullen als de telefoon het niet doet.</span></p>
 <p class="muted">De hike heeft altijd twee dagen. Kies hoeveel checkpoints elke dag heeft; de nummers lopen door (dag 2 begint na de laatste CP van dag 1). Een naam is optioneel.</p>
 <p class="muted">Vul per looproute de verwachte looptijd in <b>minuten</b> in (anderhalf uur = 90). Een groep die {{ grace }} minuten langer onderweg is dan verwacht, komt als "te laat" op het overzicht. Ernaast zie je hoe lang groepen er gemiddeld echt over deden.</p>
 <form method="post">

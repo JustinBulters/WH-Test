@@ -1,0 +1,4 @@
+<div class="row">
+  <label>Reden<select name="reason" required><option value="">Kies…</option>{% for r in RETIRE_REASONS %}<option>{{ r }}</option>{% endfor %}</select></label>
+  <label style="flex:1 1 14rem">Toelichting (optioneel)<input name="reason_text" maxlength="200" placeholder="bv. knie"></label>
+</div>
