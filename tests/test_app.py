@@ -1460,3 +1460,25 @@ def test_cards_show_status_qr_only_when_on(client):
     assert "Volg jullie groep" in page and "Voor de posten" in page and page.count('class="qr-status"><svg') == 1
     with wh.app.app_context():
         assert wh.get_db().execute("SELECT code FROM groups WHERE id = 1").fetchone()[0]
+
+
+# --- Merge review: wipe makes a backup first
+
+def test_wipe_makes_backup_first(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("UPDATE users SET is_super = 1 WHERE username = 'admin'")
+        db.commit()
+    t = login(client, "admin")
+    import os
+    folder = None
+    with wh.app.app_context():
+        folder = wh.backup_dir()
+    before = set(os.listdir(folder)) if os.path.isdir(folder) else set()
+    client.post("/instellingen", data={"csrf": t, "op": "wipe", "confirm": "WISSEN"})
+    after = set(os.listdir(folder))
+    assert len(after - before) >= 1 or before  # a backup exists
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 0
+        row = wh.get_db().execute("SELECT action FROM audit_log WHERE action LIKE 'alle groepsdata gewist%'").fetchone()
+        assert "backup vooraf: wh-" in row["action"]

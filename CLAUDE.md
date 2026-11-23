@@ -47,7 +47,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirement
 ## Deploy
 - Every merge to `main` makes GitHub Actions (`.github/workflows/docker.yml`) run the tests and push `ghcr.io/justinbulters/wh-test:latest`.
 - Justin's Synology NAS runs `compose.yaml` in Container Manager, with the site on port **9999**. An `updater` container pulls the new image every 2 minutes, so a merge goes live by itself.
-- Data (database plus session key) lives in `/volume1/docker/wh-hike/data`, bind-mounted to `/data`.
+- Data (database plus session key) lives in `/volume1/docker/wh-hike/data`, bind-mounted to `/data`. Hourly backups go to `/data/backups` (newest 48 kept).
 - Secrets go in `.env` on the NAS only: `WH_ADMIN_PASSWORD` (used on first start only) and optionally `WH_BASE_URL` for the QR codes.
 - The site sits behind HAProxy with a FortiGate in front:
   - `WH_HTTPS=1` makes the session cookie HTTPS-only.

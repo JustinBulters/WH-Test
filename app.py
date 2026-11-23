@@ -2092,6 +2092,13 @@ def settings():
             if request.form.get("confirm", "").strip().upper() != "WISSEN":
                 flash("Typ WISSEN om te bevestigen. Er is niets gewist.", "error")
             else:
+                # A backup first, so a wipe by mistake can always be undone.
+                try:
+                    saved = make_backup()
+                except Exception:
+                    app.logger.exception("Backup voor het wissen mislukt")
+                    flash("Er is niets gewist: de backup vooraf is mislukt.", "error")
+                    return redirect(url_for("settings"))
                 counts = {t: db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                           for t in ("groups", "hikers", "checkins", "scores")}
                 for table in ("late_alerts", "score_requests", "scores", "checkins", "hikers", "groups"):
@@ -2099,7 +2106,8 @@ def settings():
                 db.execute("DELETE FROM notifications WHERE link LIKE '/verzoeken%' OR link LIKE '/g/%' "
                            "OR link LIKE '/checkpoint/%/groep/%'")
                 db.commit()
-                audit("alle groepsdata gewist: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+                audit("alle groepsdata gewist: " + ", ".join(f"{k}={v}" for k, v in counts.items())
+                      + f" (backup vooraf: {saved})")
                 flash(f"Alle groepsdata is gewist ({counts['groups']} groepen, {counts['hikers']} wandelaars). "
                       "Accounts en instellingen zijn bewaard.", "ok")
         return redirect(url_for("settings"))
@@ -2272,6 +2280,10 @@ def auto_backup(response):
         db = get_db()
         cutoff = (datetime.now(timezone.utc)
                   - timedelta(minutes=BACKUP_EVERY_MINUTES)).isoformat(timespec="seconds")
+        # Cheap read first: almost every request stops here, without writing to the database.
+        last = db.execute("SELECT value FROM settings WHERE key = 'last_backup'").fetchone()
+        if last is not None and last[0] >= cutoff:
+            return response
         db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('last_backup', '')")
         cur = db.execute("UPDATE settings SET value = ? WHERE key = 'last_backup' AND value < ?",
                          (now_utc(), cutoff))

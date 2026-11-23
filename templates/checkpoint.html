@@ -16,6 +16,7 @@
   {% endif %}
 </div>
 {% set action = url_for('checkpoint', cp=cp) %}{% include "_lookup.html" %}
+<p class="actions"><a class="btn alt" href="{{ url_for('paper_checkpoint', cp=cp) }}">Papieren lijst (reserve)</a></p>
 {% if coming %}
 <div class="panel coming">
   <h2>Onderweg naar jou ({{ coming|length }})</h2>
