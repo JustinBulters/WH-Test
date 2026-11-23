@@ -14,6 +14,31 @@
   </form>
 </fieldset>
 
+{# --- agent D: statuspagina voor wandelaars --- #}
+{% set st_on = status_setting_on('status_page') %}{% set st_rank = status_setting_on('status_rank') %}
+<fieldset>
+  <legend>Statuspagina voor wandelaars</legend>
+  <p class="muted">Elke groep krijgt een geheime link (een tweede QR-code op de groepskaart). Daarmee zien de wandelaars zonder inloggen waar hun groep staat. Namen, opmerkingen, noodnummers en andere groepen zijn daar nooit te zien.</p>
+  <form method="post" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="status_page">
+    <input type="hidden" name="value" value="{{ '0' if st_on else '1' }}">
+    <span>Statuspagina staat <b>{{ 'aan' if st_on else 'uit' }}</b></span>
+    <button{% if st_on %} class="alt"{% endif %}>{{ 'Uitzetten' if st_on else 'Aanzetten' }}</button>
+  </form>
+  <form method="post" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="status_rank">
+    <input type="hidden" name="value" value="{{ '0' if st_rank else '1' }}">
+    <span>Plaats en punten tonen op statuspagina: <b>{{ 'aan' if st_rank else 'uit' }}</b></span>
+    <button{% if st_rank %} class="alt"{% endif %}>{{ 'Uitzetten' if st_rank else 'Aanzetten' }}</button>
+  </form>
+  <form method="post" class="row" onsubmit="return confirm('Alle codes vernieuwen? De QR-codes op geprinte kaarten werken daarna niet meer.')">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="status_codes_renew">
+    <button class="alt">Alle codes vernieuwen</button>
+    <span class="muted">Oude kaarten werken daarna niet meer.</span>
+  </form>
+</fieldset>
+{# --- einde agent D --- #}
+
 <fieldset class="danger-zone">
   <legend>Alle groepsdata wissen</legend>
   <p>Wist alle <b>{{ counts.groups }}</b> groepen, <b>{{ counts.hikers }}</b> wandelaars, <b>{{ counts.checkins }}</b> in- en uitchecks en <b>{{ counts.scores }}</b> scores, plus de wijzigingsverzoeken. Accounts, instellingen en het logboek blijven bewaard. Dit kun je <b>niet</b> ongedaan maken.</p>

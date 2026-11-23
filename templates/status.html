@@ -1,0 +1,20 @@
+{% extends "base.html" %}{% block title %}{% if info %}Groep {{ info.name }}{% else %}Niet gevonden{% endif %}{% endblock %}
+{% block head %}<meta name="robots" content="noindex">{% if info %}
+<meta http-equiv="refresh" content="60">{% endif %}{% endblock %}
+{% block content %}
+<div class="status-card">
+{% if info %}
+  <p class="muted">{{ info.category|capitalize }}</p>
+  <h1>Groep {{ info.name }}</h1>
+  <p class="status-state">{{ info.state }}</p>
+  <p>{{ info.done }} van {{ info.total }} checkpoints gedaan</p>
+  {% if info.place is defined %}
+  <p><b>{{ info.points }}</b> punten · <b>{{ info.place }}e</b> van {{ info.of }} in de {{ info.category }}</p>
+  {% endif %}
+  <p class="muted">Bijgewerkt {{ info.now }} · ververst elke minuut</p>
+{% else %}
+  <h1>Niet gevonden</h1>
+  <p>Deze statuspagina bestaat niet of is op dit moment niet beschikbaar.</p>
+{% endif %}
+</div>
+{% endblock %}

@@ -197,3 +197,12 @@ fieldset.danger-zone legend{color:var(--red)}
 .toast button{min-height:0;padding:.1rem .5rem;font-size:1.2rem;line-height:1}
 .toast.fade{opacity:0}
 @keyframes toast-in{from{transform:translateY(1rem);opacity:0}to{transform:none;opacity:1}}
+/* agent D */
+/* Hikers' status page: small and centred, also on a big phone */
+.status-card{max-width:26rem;margin:2rem auto;padding:1.25rem;background:var(--surface);border:1px solid var(--line);border-radius:14px;text-align:center}
+.status-card h1{margin:.2rem 0 .8rem;font-size:2rem}
+.status-state{font-size:1.35rem;font-weight:700;color:var(--brand);margin:.5rem 0}
+/* Group cards with a second, small QR for the hikers */
+.gcard figure{margin:0;text-align:center;font-size:.75rem;color:#555}
+.gcard .qr-status{display:flex;align-items:center;gap:.4rem;margin-top:.6rem;text-align:left}
+.gcard .qr-status svg{width:4.5rem;height:4.5rem}
