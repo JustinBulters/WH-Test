@@ -1011,3 +1011,201 @@ def test_checkpoint_open_and_close(client):
     client.post("/checkpoint/5/status", data={"csrf": t, "open": "0"})
     with wh.app.app_context():
         assert wh.get_db().execute("SELECT COUNT(*) FROM notifications").fetchone()[0] == 2
+
+
+# --- Agent B: backups and import
+
+import io
+import os
+import sqlite3
+
+from openpyxl import Workbook
+
+
+def _backups():
+    folder = wh.backup_dir()
+    return sorted(f for f in os.listdir(folder) if wh.BACKUP_NAME.match(f)) if os.path.isdir(folder) else []
+
+
+def _make_super(name="admin"):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("UPDATE users SET is_super = 1 WHERE username = ?", (name,))
+        db.commit()
+
+
+def test_backup_is_valid_copy_with_data(client):
+    _make_super()
+    t = login(client, "admin")
+    assert wh.backup_dir().startswith(os.path.dirname(wh.app.config["DATABASE"]))
+    for f in _backups():  # the hourly backup of the first request; start clean
+        os.remove(os.path.join(wh.backup_dir(), f))
+    client.post("/instellingen", data={"csrf": t, "op": "backup"})
+    names = _backups()
+    assert len(names) == 1
+    con = sqlite3.connect(os.path.join(wh.backup_dir(), names[0]))
+    try:
+        assert con.execute("SELECT name FROM groups").fetchone()[0] == "101"
+        assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        con.close()
+    page = client.get("/instellingen").get_data(as_text=True)
+    assert names[0] in page and "Nu een backup maken" in page
+    r = client.get(f"/instellingen/backup/{names[0]}")
+    assert r.status_code == 200 and "attachment" in r.headers["Content-Disposition"]
+    assert r.data[:15] == b"SQLite format 3"
+    r.close()
+    with wh.app.app_context():
+        actions = [a[0] for a in wh.get_db().execute("SELECT action FROM audit_log")]
+    assert f"backup gemaakt: {names[0]}" in actions and f"backup gedownload: {names[0]}" in actions
+
+
+def test_backup_retention_keeps_48(client):
+    folder = wh.backup_dir()
+    os.makedirs(folder, exist_ok=True)
+    for i in range(50):
+        open(os.path.join(folder, f"wh-2000{(i // 28) + 1:02d}{(i % 28) + 1:02d}-000000.sqlite3"), "wb").close()
+    with wh.app.app_context():
+        new = wh.make_backup()
+    names = _backups()
+    assert len(names) == 48 and names[-1] == new
+    assert "wh-20000101-000000.sqlite3" not in names and "wh-20000103-000000.sqlite3" not in names
+
+
+def test_hourly_backup_runs_once_per_hour(client):
+    login(client, "admin")
+    client.get("/")
+    client.get("/groepen")
+    assert len(_backups()) == 1
+    # Pretend the last backup was two hours ago: the next request makes a new one.
+    folder = wh.backup_dir()
+    os.replace(os.path.join(folder, _backups()[0]), os.path.join(folder, "wh-20000101-000000.sqlite3"))
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("UPDATE settings SET value = '2000-01-01T00:00:00+00:00' WHERE key = 'last_backup'")
+        db.commit()
+    client.get("/")
+    client.get("/")
+    assert len(_backups()) == 2
+
+
+def test_backup_download_rejects_bad_names_and_non_super(client):
+    login(client, "admin")
+    name = _backups()[0]
+    assert client.get(f"/instellingen/backup/{name}").status_code == 403  # admin, not superadmin
+    _make_super()
+    for bad in ("..%2Fapp.py", "..%2F..%2Fapp.py", "app.py", "wh-1.sqlite3", "wh-20000101-000000.sqlite3"):
+        assert client.get(f"/instellingen/backup/{bad}").status_code == 404, bad
+    client.post("/uitloggen", data={"csrf": csrf(client, "/profiel")})
+    login(client, "kijk")
+    assert client.get(f"/instellingen/backup/{name}").status_code == 403
+
+
+def _upload(client, t, content, filename):
+    return client.post("/groepen", data={"csrf": t, "op": "import", "file": (io.BytesIO(content), filename)},
+                       content_type="multipart/form-data", follow_redirects=True)
+
+
+def _groups():
+    with wh.app.app_context():
+        db = wh.get_db()
+        return {r["name"]: (r["category"], r["phone"], [h[0] for h in db.execute(
+            "SELECT name FROM hikers WHERE group_id = ? ORDER BY id", (r["id"],))])
+            for r in db.execute("SELECT * FROM groups")}
+
+
+def test_import_csv_semicolon_and_comma(client):
+    t = login(client, "admin")
+    semi = ("Categorie ; Wandelaar 1;Opmerking 1;wandelaar 2;opmerking 2;wandelaar 3;opmerking 3;noodnummer\r\n"
+            "junioren;Piet;;Klaas;;;;06 111\r\n;;;;;;;\r\nVETERANEN;Joop;suiker;;;;;\r\n").encode("utf-8-sig")
+    page = _upload(client, t, semi, "lijst.csv").get_data(as_text=True)
+    assert "2 groepen geïmporteerd: 102, 301" in page
+    g = _groups()
+    assert g["102"] == ("junioren", "06 111", ["Piet", "Klaas"]) and g["301"][2] == ["Joop"]
+    comma = "categorie,wandelaar 1,wandelaar 2\nsenioren,Zoë,Ezra\nsenioren,Tim,\n".encode("cp1252")
+    page = _upload(client, t, comma, "lijst2.CSV").get_data(as_text=True)
+    assert "2 groepen geïmporteerd: 201-202" in page
+    assert _groups()["201"][2] == ["Zoë", "Ezra"]
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT 1 FROM audit_log WHERE action = "
+                                   "'groepen geïmporteerd: 2 uit lijst2.CSV'").fetchone()
+
+
+def test_import_one_bad_row_imports_nothing(client):
+    t = login(client, "admin")
+    data = ("categorie;wandelaar 1;wandelaar 2\njunioren;A;B\nsenioren;C;\nkids;D;\n;;\njunioren;;E\n"
+            ).encode("utf-8")
+    page = _upload(client, t, data, "fout.csv").get_data(as_text=True)
+    assert "Er is niets geïmporteerd" in page
+    assert "Rij 4: onbekende categorie &#39;kids&#39;" in page
+    assert "Rij 6: geen naam bij wandelaar 1" in page
+    assert set(_groups()) == {"101"}
+
+
+def test_import_full_category_imports_nothing(client):
+    t = login(client, "admin")
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.executemany("INSERT INTO groups (name, category) VALUES (?, 'veteranen')",
+                       [(str(n),) for n in range(301, 399)])
+        db.commit()
+    data = "categorie;wandelaar 1\nsenioren;A\nveteranen;B\nveteranen;C\n".encode("utf-8")
+    page = _upload(client, t, data, "vol.csv").get_data(as_text=True)
+    assert "Rij 4: categorie veteranen is vol" in page
+    assert "201" not in _groups() and "399" not in _groups()
+
+
+def test_import_rejects_type_size_and_non_admin(client):
+    t = login(client, "admin")
+    assert "Alleen een CSV-bestand" in _upload(client, t, b"x", "lijst.txt").get_data(as_text=True)
+    big = b"categorie;wandelaar 1\n" + b"junioren;" + b"x" * (1024 * 1024) + b"\n"
+    assert "te groot" in _upload(client, t, big, "groot.csv").get_data(as_text=True)
+    assert set(_groups()) == {"101"}
+    client.post("/uitloggen", data={"csrf": t})
+    t = login(client, "kijk")
+    r = client.post("/groepen", data={"csrf": t, "op": "import", "file": (io.BytesIO(b"x"), "a.csv")},
+                    content_type="multipart/form-data")
+    assert r.status_code == 403
+    assert client.get("/groepen/voorbeeld.csv").status_code == 403
+    assert client.get("/groepen/voorbeeld.xlsx").status_code == 403
+
+
+def test_import_excel(client):
+    t = login(client, "admin")
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Categorie", "Wandelaar 1", "Opmerking 1", "Wandelaar 2", "Opmerking 2", "Wandelaar 3",
+               "Opmerking 3", "Noodnummer"])
+    ws.append(["Senioren", "Lisa", "glutenvrij", "Mo", None, "Noor", None, 612345678.0])
+    ws.append([None, None])
+    ws.append(["junioren", "Ole", None, None, None, None, None, None])
+    out = io.BytesIO()
+    wb.save(out)
+    page = _upload(client, t, out.getvalue(), "groepen.xlsx").get_data(as_text=True)
+    assert "2 groepen geïmporteerd: 102, 201" in page
+    g = _groups()
+    assert g["201"] == ("senioren", "612345678", ["Lisa", "Mo", "Noor"])
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT comment FROM hikers WHERE name = 'Lisa'").fetchone()[0] == "glutenvrij"
+
+
+def test_sample_files_download_and_reimport(client):
+    t = login(client, "admin")
+    assert "voorbeeld.csv" in client.get("/groepen").get_data(as_text=True)
+    r = client.get("/groepen/voorbeeld.csv")
+    assert r.status_code == 200 and "voorbeeld-groepen.csv" in r.headers["Content-Disposition"]
+    assert r.data.startswith("﻿categorie;wandelaar 1;".encode("utf-8"))
+    page = _upload(client, t, r.data, "voorbeeld-groepen.csv").get_data(as_text=True)
+    assert "3 groepen geïmporteerd: 102, 201, 301" in page
+    x = client.get("/groepen/voorbeeld.xlsx")
+    assert x.status_code == 200 and "voorbeeld-groepen.xlsx" in x.headers["Content-Disposition"]
+    page = _upload(client, t, x.data, "voorbeeld-groepen.xlsx").get_data(as_text=True)
+    assert "3 groepen geïmporteerd: 103, 202, 302" in page
+    assert _groups()["202"][2] == ["Chris Bakker", "Dana Visser", "Eva Smit"]
+
+
+def test_manual_group_create_still_works(client):
+    t = login(client, "admin")
+    client.post("/groepen", data={"csrf": t, "category": "senioren", "hiker_name": ["X", "", ""],
+                                  "hiker_comment": ["", "", ""], "phone": ""})
+    assert "201" in _groups()

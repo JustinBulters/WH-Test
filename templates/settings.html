@@ -14,6 +14,25 @@
   </form>
 </fieldset>
 
+{# --- backups (agent B) --- #}
+<fieldset>
+  <legend>Backups van de database</legend>
+  <p class="muted">De site maakt zelf elk uur een backup (als er iemand op de site is). De nieuwste 48 blijven bewaard, in de map <code>backups</code> naast de database (op de NAS: <code>/data/backups</code>).</p>
+  <form method="post" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="backup">
+    <button>Nu een backup maken</button>
+  </form>
+  {% if backups %}
+  <div class="wrap"><table class="backups">
+    <tr><th>Backup</th><th>Gemaakt</th><th>Grootte</th></tr>
+    {% for b in backups %}
+    <tr><td><a href="{{ url_for('backup_download', name=b.name) }}" download>{{ b.name }}</a></td><td>{{ b.at|localtime('%d-%m-%Y %H:%M') }}</td><td>{{ b.size|filesize }}</td></tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="muted">Er zijn nog geen backups.</p>{% endif %}
+</fieldset>
+{# --- end backups (agent B) --- #}
+
 <fieldset class="danger-zone">
   <legend>Alle groepsdata wissen</legend>
   <p>Wist alle <b>{{ counts.groups }}</b> groepen, <b>{{ counts.hikers }}</b> wandelaars, <b>{{ counts.checkins }}</b> in- en uitchecks en <b>{{ counts.scores }}</b> scores, plus de wijzigingsverzoeken. Accounts, instellingen en het logboek blijven bewaard. Dit kun je <b>niet</b> ongedaan maken.</p>
