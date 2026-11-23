@@ -33,11 +33,26 @@
     setTimeout(function () { t.classList.add('fade'); setTimeout(function () { t.remove(); }, 400); }, 15000);
   }
 
+  var timer = null;
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+
+  // fetch with a time limit, so a stuck poll does not freeze all later polls.
+  function fetchT(u, opts) {
+    var ctl = window.AbortController ? new AbortController() : null, t;
+    if (ctl) { opts.signal = ctl.signal; t = setTimeout(function () { ctl.abort(); }, 12000); }
+    return fetch(u, opts).then(function (r) { clearTimeout(t); return r; },
+                              function (e) { clearTimeout(t); throw e; });
+  }
+
   function poll() {
     if (busy || document.hidden || !navigator.onLine) return;
     busy = true;
-    fetch(url + '?na=' + last, {credentials: 'same-origin', cache: 'no-store'})
-      .then(function (r) { return r.ok ? r.json() : null; })
+    fetchT(url + '?na=' + last + '&ajax=1', {credentials: 'same-origin', cache: 'no-store'})
+      .then(function (r) {
+        // Session ended: the server asks us to log in again. Stop polling instead of looping.
+        if (r.status === 401) { stop(); return null; }
+        return r.ok ? r.json() : null;
+      })
       .then(function (d) {
         if (!d) return;
         d.items.forEach(toast);
@@ -49,6 +64,6 @@
   }
 
   poll();
-  setInterval(poll, 15000);
+  timer = setInterval(poll, 15000);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
 })();

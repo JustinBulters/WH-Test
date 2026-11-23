@@ -35,6 +35,8 @@ CATEGORIES = {
 # How many checkpoints each of the two days has, unless an admin changed it.
 DEFAULT_PER_DAY = {1: 7, 2: 5}
 MAX_PER_DAY = 25
+# Hikers per group. A merge may go above this; the admin then gets a warning.
+MAX_HIKERS = 3
 # A group counts as late this many minutes after the expected walking time.
 LATE_GRACE = 30
 
@@ -253,8 +255,15 @@ def init_db():
     # Groups with an old free-text name get the next number in their category.
     for g in db.execute("SELECT id, category FROM groups WHERE name GLOB '*[^0-9]*' OR name = '' "
                         "ORDER BY id").fetchall():
-        db.execute("UPDATE groups SET name = ? WHERE id = ?",
-                   (str(next_group_number(db, g["category"])), g["id"]))
+        number = next_group_number(db, g["category"])
+        if number is not None:  # category full: keep the old name rather than writing "None"
+            db.execute("UPDATE groups SET name = ? WHERE id = ?", (str(number), g["id"]))
+    # At most one open change request per group per checkpoint, also when two taps arrive together.
+    try:
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS score_requests_one_open "
+                   "ON score_requests (group_id, checkpoint) WHERE status = 'open'")
+    except sqlite3.IntegrityError:
+        pass  # an old database already has two open requests; the check in the route still applies
     db.commit()
 
 
@@ -262,7 +271,7 @@ def next_group_number(db, category):
     """The next free group number in a category: one above the highest, else the first gap."""
     lo, hi = CATEGORIES[category]
     used = {int(r[0]) for r in db.execute(
-        "SELECT name FROM groups WHERE category = ?", (category,)) if r[0].isdigit()}
+        "SELECT name FROM groups WHERE category = ?", (category,)) if r[0].isdecimal()}
     if not used:
         return lo
     if max(used) < hi:
@@ -322,7 +331,19 @@ def current_user():
         if uid:
             g.user = get_db().execute(
                 "SELECT * FROM users WHERE id = ? AND active = 1", (uid,)).fetchone()
+            if g.user is not None:
+                # A password change logs out every other phone with that account.
+                mark = password_mark(g.user)
+                if "pw" not in session:
+                    session["pw"] = mark  # logged in before this check existed
+                elif session["pw"] != mark:
+                    g.user = None
     return g.user
+
+
+def password_mark(user):
+    """A short piece of the password hash, kept in the session to notice password changes."""
+    return user["password_hash"][-16:]
 
 
 def audit(action):
@@ -341,7 +362,7 @@ def csrf_protect():
 
 @app.after_request
 def write_audit(response):
-    if request.endpoint in ("static", "service_worker", "notifications_poll"):
+    if request.endpoint in ("static", "service_worker", "notifications_poll", "csrf_token"):
         return response
     user = current_user()  # cached in g, so still known right after logout
     action = g.get("audit_action")
@@ -401,14 +422,14 @@ def checkpoints_per_day():
     out = []
     for day in (1, 2):
         raw = get_setting(f"cp_day{day}", "")
-        out.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= MAX_PER_DAY else DEFAULT_PER_DAY[day])
+        out.append(int(raw) if raw.isdecimal() and 1 <= int(raw) <= MAX_PER_DAY else DEFAULT_PER_DAY[day])
     return tuple(out)
 
 
 def cp_names():
     if "cp_names" not in g:
         g.cp_names = {int(r[0][8:]): r[1] for r in get_db().execute(
-            "SELECT key, value FROM settings WHERE key LIKE 'cp_name_%'") if r[0][8:].isdigit()}
+            "SELECT key, value FROM settings WHERE key LIKE 'cp_name_%'") if r[0][8:].isdecimal()}
     return g.cp_names
 
 
@@ -419,7 +440,7 @@ def cp_details(cp):
         for key, value in get_db().execute(
                 "SELECT key, value FROM settings WHERE key LIKE 'cp_theme_%' OR key LIKE 'cp_crew_%'"):
             field, num = key[3:].split("_", 1)
-            if num.isdigit():
+            if num.isdecimal():
                 g.cp_details.setdefault(int(num), {})[field] = value
     return g.cp_details.get(cp, {})
 
@@ -451,6 +472,9 @@ def login_required(*roles):
         def wrapped(*args, **kwargs):
             user = current_user()
             if user is None:
+                if wants_json():
+                    # Scripts must see "not logged in", not a login page that looks like success.
+                    return jsonify(ok=False, login=True, message="Log opnieuw in."), 401
                 return redirect(url_for("login", next=request.path))
             if roles and user["role"] not in roles:
                 abort(403)
@@ -461,10 +485,20 @@ def login_required(*roles):
     return decorator
 
 
+def is_local_path(path):
+    """A link to a page on this site. Browsers read '\\' as '/', so '/\\evil.example' is not local."""
+    return path.startswith("/") and not path.startswith("//") and "\\" not in path
+
+
 def safe_back(default):
     """Only follow a local 'back' link from a form."""
     back = request.form.get("back", "")
-    return back if back.startswith("/") and not back.startswith("//") else default
+    return back if is_local_path(back) else default
+
+
+def wants_json():
+    """Requests made by the site's own scripts (offline check-ins, notification poll)."""
+    return bool(request.form.get("ajax") or request.args.get("ajax"))
 
 
 def can_view_checkpoint(cp):
@@ -491,6 +525,11 @@ def check_cp(cp, edit=False):
 def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
+        if too_many_login_failures(username):
+            g.audit_username = username
+            audit("inloggen geblokkeerd: te veel mislukte pogingen")
+            flash(f"Te veel mislukte pogingen. Probeer het over {LOGIN_LOCK_MINUTES} minuten opnieuw.", "error")
+            return render_template("login.html"), 429
         user = get_db().execute(
             # Usernames are not case sensitive; an exact match wins if two only differ in case.
             "SELECT * FROM users WHERE username = ? COLLATE NOCASE AND active = 1 "
@@ -498,14 +537,31 @@ def login():
         if user and check_password_hash(user["password_hash"], request.form.get("password", "")):
             session.clear()
             session["user_id"] = user["id"]
+            session["pw"] = password_mark(user)
             g.user = user
             audit("ingelogd")
             nxt = request.args.get("next", "")
-            return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else url_for("index"))
+            return redirect(nxt if is_local_path(nxt) else url_for("index"))
         g.audit_username = username
         audit("mislukte inlogpoging")
         flash("Onjuiste gebruikersnaam of wachtwoord.", "error")
     return render_template("login.html")
+
+
+# Failed logins: after this many in LOGIN_LOCK_MINUTES, logging in is paused.
+LOGIN_MAX_PER_USER = 10
+LOGIN_MAX_PER_IP = 30  # higher: many phones can share one address
+LOGIN_LOCK_MINUTES = 15
+
+
+def too_many_login_failures(username):
+    since = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_LOCK_MINUTES)).isoformat(timespec="seconds")
+    db = get_db()
+    per_user = db.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'mislukte inlogpoging' AND at > ? "
+                          "AND username = ? COLLATE NOCASE", (since, username)).fetchone()[0]
+    per_ip = db.execute("SELECT COUNT(*) FROM audit_log WHERE action = 'mislukte inlogpoging' AND at > ? "
+                        "AND ip = ?", (since, request.remote_addr)).fetchone()[0]
+    return per_user >= LOGIN_MAX_PER_USER or per_ip >= LOGIN_MAX_PER_IP
 
 
 @app.route("/uitloggen", methods=["POST"])
@@ -539,9 +595,10 @@ def profile():
             elif len(new) < 8:
                 flash("Nieuw wachtwoord moet minstens 8 tekens hebben.", "error")
             else:
-                db.execute("UPDATE users SET password_hash = ? WHERE id = ?",
-                           (generate_password_hash(new), user["id"]))
+                new_hash = generate_password_hash(new)
+                db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
                 db.commit()
+                session["pw"] = new_hash[-16:]  # stay logged in here; other phones are logged out
                 audit("eigen wachtwoord gewijzigd")
                 flash("Wachtwoord gewijzigd.", "ok")
         return redirect(url_for("profile"))
@@ -594,7 +651,7 @@ def form_scores(cp):
     vals = []
     for field in ("quiz", "practical"):
         raw = request.form.get(f"{field}_{cp}", "")
-        vals.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None)
+        vals.append(int(raw) if raw.isdecimal() and 1 <= int(raw) <= 10 else None)
     return vals
 
 
@@ -614,10 +671,12 @@ def save_group_scores(db, group, cps, write_once=False):
             vals = [o if o is not None else v for o, v in zip(old, vals)]
         if old == vals:
             continue
+        # With write_once, a score saved by someone else in the meantime is never overwritten.
+        keep = "COALESCE(scores.{0}, excluded.{0})" if write_once else "excluded.{0}"
         db.execute(
             "INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at, updated_by) "
             "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (group_id, checkpoint) DO UPDATE SET "
-            "quiz = excluded.quiz, practical = excluded.practical, "
+            f"quiz = {keep.format('quiz')}, practical = {keep.format('practical')}, "
             "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
             (group["id"], cp, vals[0], vals[1], now_utc(), current_user()["id"]))
         changed.append(f"CP{cp} quiz={vals[0]} praktijk={vals[1]}")
@@ -631,8 +690,10 @@ def checkpoint_stats(db):
     """Per checkpoint: groups present (in), left (out) and still expected (todo); plus active groups."""
     stats = {cp: {"in": 0, "out": 0} for cp in CHECKPOINTS}
     for row in db.execute(
-            "SELECT checkpoint, SUM(checkin_at IS NOT NULL AND checkout_at IS NULL) AS present, "
-            "SUM(checkout_at IS NOT NULL) AS done FROM checkins GROUP BY checkpoint"):
+            # A group that dropped out while checked in is no longer "present".
+            "SELECT c.checkpoint, SUM(c.checkin_at IS NOT NULL AND c.checkout_at IS NULL "
+            "AND g.retired_at IS NULL) AS present, SUM(c.checkout_at IS NOT NULL) AS done "
+            "FROM checkins c JOIN groups g ON g.id = c.group_id GROUP BY c.checkpoint"):
         stats[row["checkpoint"]] = {"in": row["present"], "out": row["done"]}
     # Still expected at a checkpoint: groups that have not dropped out, have not been
     # there yet and have not been seen at a later checkpoint either.
@@ -654,7 +715,7 @@ def leg_times(db):
     out = {cp: {"to": nxt, "expected": None, "avg": None, "count": 0} for cp, nxt in legs().items()}
     for cp in out:
         raw = get_setting(f"leg_{cp}", "")
-        out[cp]["expected"] = int(raw) if raw.isdigit() else None
+        out[cp]["expected"] = int(raw) if raw.isdecimal() else None
     walked = {}
     for r in db.execute("SELECT a.checkpoint AS cp, a.checkout_at AS start, b.checkin_at AS end FROM checkins a "
                         "JOIN checkins b ON b.group_id = a.group_id AND b.checkpoint = a.checkpoint + 1 "
@@ -800,7 +861,8 @@ def score_request_new(cp, gid):
     old = db.execute("SELECT quiz, practical FROM scores WHERE group_id = ? AND checkpoint = ?",
                      (gid, cp)).fetchone()
     old = list(old or (None, None))
-    new = form_scores(cp)
+    # A field left on "–" means "keep this score", never "erase it".
+    new = [n if n is not None else o for n, o in zip(form_scores(cp), old)]
     reason = request.form.get("reason", "").strip()[:500]
     if db.execute("SELECT 1 FROM score_requests WHERE group_id = ? AND checkpoint = ? AND status = 'open'",
                   (gid, cp)).fetchone():
@@ -811,10 +873,14 @@ def score_request_new(cp, gid):
         flash("Er is niets gewijzigd.", "error")
     else:
         me = current_user()
-        cur = db.execute(
-            "INSERT INTO score_requests (group_id, checkpoint, old_quiz, old_practical, quiz, practical, "
-            "reason, requested_by, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (gid, cp, old[0], old[1], new[0], new[1], reason, me["id"], now_utc()))
+        try:
+            cur = db.execute(
+                "INSERT INTO score_requests (group_id, checkpoint, old_quiz, old_practical, quiz, practical, "
+                "reason, requested_by, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (gid, cp, old[0], old[1], new[0], new[1], reason, me["id"], now_utc()))
+        except sqlite3.IntegrityError:  # a double tap: the first one already made the request
+            flash("Er staat al een wijzigingsverzoek open voor deze groep.", "error")
+            return redirect(back)
         admins = [r[0] for r in db.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1")]
         notify(db, admins, f"{me['username']} vraagt een scorewijziging voor groep {group['name']} op CP {cp}",
                url_for("score_request", rid=cur.lastrowid))
@@ -862,10 +928,12 @@ def score_request(rid):
             db.execute("UPDATE score_requests SET status = ?, decided_by = ?, decided_at = ?, "
                        "decision_note = ? WHERE id = ?", (decision, me["id"], now_utc(), note, rid))
             if decision == "approved":
+                # An empty value in the request keeps the current score (older requests could have one).
                 db.execute(
                     "INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at, updated_by) "
                     "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (group_id, checkpoint) DO UPDATE SET "
-                    "quiz = excluded.quiz, practical = excluded.practical, "
+                    "quiz = COALESCE(excluded.quiz, scores.quiz), "
+                    "practical = COALESCE(excluded.practical, scores.practical), "
                     "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
                     (req["group_id"], req["checkpoint"], req["quiz"], req["practical"], now_utc(), me["id"]))
             word = "goedgekeurd" if decision == "approved" else "afgewezen"
@@ -891,20 +959,27 @@ def notifications():
     return render_template("notifications.html", rows=rows)
 
 
+POLL_LIMIT = 5  # pop-ups per poll; the rest follow in the next poll
+
+
 @app.route("/meldingen/nieuw")
 @login_required()
 def notifications_poll():
     """Small JSON for the pop-up: unread notifications newer than ?na=<id>, and the unread count."""
     after = request.args.get("na", "0")
-    after = int(after) if after.isdigit() else 0
+    after = int(after) if after.isdecimal() else 0
     db = get_db()
     send_late_alerts(db)
     uid = current_user()["id"]
     rows = db.execute("SELECT id, text FROM notifications WHERE user_id = ? AND read_at IS NULL AND id > ? "
-                      "ORDER BY id LIMIT 5", (uid, after)).fetchall()
+                      "ORDER BY id LIMIT ?", (uid, after, POLL_LIMIT)).fetchall()
     unread = db.execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL",
                         (uid,)).fetchone()[0]
-    last = db.execute("SELECT COALESCE(MAX(id), 0) FROM notifications WHERE user_id = ?", (uid,)).fetchone()[0]
+    if len(rows) == POLL_LIMIT:
+        last = rows[-1]["id"]  # more are waiting: the next poll continues after these
+    else:
+        last = db.execute("SELECT COALESCE(MAX(id), 0) FROM notifications WHERE user_id = ?",
+                          (uid,)).fetchone()[0]
     resp = jsonify(unread=unread, last=last,
                    items=[{"id": r["id"], "text": r["text"], "url": url_for("notification_open", nid=r["id"])}
                           for r in rows])
@@ -924,7 +999,7 @@ def notification_open(nid):
     if not n["read_at"]:
         db.execute("UPDATE notifications SET read_at = ? WHERE id = ?", (now_utc(), nid))
         db.commit()
-    return redirect(n["link"] if n["link"].startswith("/") and not n["link"].startswith("//") else url_for("index"))
+    return redirect(n["link"] if is_local_path(n["link"]) else url_for("index"))
 
 
 @app.route("/meldingen/gelezen", methods=["POST"])
@@ -954,11 +1029,15 @@ def checkpoint_stamp(cp, gid, action):
     visit = db.execute("SELECT * FROM checkins WHERE group_id = ? AND checkpoint = ?",
                        (gid, cp)).fetchone()
     uid, ts = current_user()["id"], now_utc()
-    tapped = tap_time(request.form.get("at", ""))
+    raw_at = request.form.get("at", "")
+    tapped = tap_time(raw_at)
     late_note = ""
     if tapped and tapped < ts:
         late_note = f" (offline getikt om {localtime(tapped, '%H:%M')}, later verstuurd)"
         ts = tapped
+    elif raw_at and not tapped:
+        # Too old (or the phone's clock is wrong): the time of sending is used. Say so in the log.
+        late_note = f" (tiktijd {raw_at[:25]} niet geloofwaardig, verzendtijd gebruikt)"
 
     def done(ok, msg, already=False):
         if ajax:
@@ -971,10 +1050,12 @@ def checkpoint_stamp(cp, gid, action):
     if group["retired_at"] and action in ("in", "uit"):
         return done(False, f"Groep {group['name']} is uitgevallen.")
     if action == "in":
-        if visit and visit["checkin_at"]:
+        # ON CONFLICT: two taps at the same moment give "already checked in", not an error.
+        cur = None if visit and visit["checkin_at"] else db.execute(
+            "INSERT INTO checkins (group_id, checkpoint, checkin_at, checkin_by) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT (group_id, checkpoint) DO NOTHING", (gid, cp, ts, uid))
+        if cur is None or not cur.rowcount:
             return done(ajax, "Deze groep is hier al ingecheckt.", already=True)
-        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkin_by) "
-                   "VALUES (?, ?, ?, ?)", (gid, cp, ts, uid))
         audit(f"groep {group['name']} ingecheckt op CP{cp}" + late_note)
         msg = f"Groep {group['name']} ingecheckt om {localtime(ts, '%H:%M')}."
     elif action == "uit":
@@ -984,8 +1065,10 @@ def checkpoint_stamp(cp, gid, action):
             return done(ajax, "Deze groep is hier al uitgecheckt.", already=True)
         if ts < visit["checkin_at"]:
             ts = visit["checkin_at"]
-        db.execute("UPDATE checkins SET checkout_at = ?, checkout_by = ? WHERE id = ?",
-                   (ts, uid, visit["id"]))
+        cur = db.execute("UPDATE checkins SET checkout_at = ?, checkout_by = ? "
+                         "WHERE id = ? AND checkout_at IS NULL", (ts, uid, visit["id"]))
+        if not cur.rowcount:
+            return done(ajax, "Deze groep is hier al uitgecheckt.", already=True)
         audit(f"groep {group['name']} uitgecheckt op CP{cp}" + late_note)
         msg = f"Groep {group['name']} uitgecheckt om {localtime(ts, '%H:%M')}."
     elif action == "herstel" and current_user()["role"] == "admin":
@@ -1016,6 +1099,15 @@ def tap_time(raw):
     return min(t, now).astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
+@app.route("/csrf")
+@login_required()
+def csrf_token():
+    """The current form token, for offline check-ins sent after a new login."""
+    resp = jsonify(csrf=session["csrf"])
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.route("/sw.js")
 def service_worker():
     """The service worker must be served from the site root to cover every page."""
@@ -1034,13 +1126,19 @@ def group_retire(gid):
     if group is None:
         abort(404)
     raw = request.form.get("cp", "")
-    cp = int(raw) if raw.isdigit() and int(raw) in CHECKPOINTS else None
+    cp = int(raw) if raw.isdecimal() and int(raw) in CHECKPOINTS else None
     if cp is None:
         # Not given: the checkpoint the group was last seen at.
         last = db.execute("SELECT checkpoint FROM checkins WHERE group_id = ? "
                           "ORDER BY COALESCE(checkout_at, checkin_at) DESC, id DESC LIMIT 1",
                           (gid,)).fetchone()
         cp = last[0] if last else None
+    if request.form.get("undo") and group["retired_note"] and not db.execute(
+            "SELECT 1 FROM hikers WHERE group_id = ?", (gid,)).fetchone():
+        # A merged group has no hikers left: bringing it back would give an empty group.
+        flash(f"Groep {group['name']} is samengevoegd en heeft geen wandelaars meer. "
+              "Voeg eerst een wandelaar toe.", "error")
+        return redirect(safe_back(url_for("index")))
     if request.form.get("undo"):
         db.execute("UPDATE groups SET retired_at = NULL, retired_cp = NULL, retired_note = '' WHERE id = ?", (gid,))
         audit(f"groep {group['name']} weer actief gemaakt")
@@ -1068,15 +1166,24 @@ def scoreboard():
 
 
 def ranking(db):
-    """Groups per category, best total score first."""
-    rows = db.execute(
+    """Groups per category, best total score first. Equal totals share a place (1, 2, 2, 4)."""
+    rows = [dict(r) for r in db.execute(
         "SELECT g.id, g.name, g.category, g.retired_at, "
         "(SELECT GROUP_CONCAT(h.name, ', ') FROM hikers h WHERE h.group_id = g.id) AS members, "
         "COALESCE(SUM(s.quiz), 0) AS quiz, COALESCE(SUM(s.practical), 0) AS practical, "
-        "COUNT(s.id) AS visits FROM groups g LEFT JOIN scores s ON s.group_id = g.id "
+        # CP's: checkpoints where the group checked in or got a score.
+        "(SELECT COUNT(*) FROM (SELECT checkpoint FROM checkins WHERE group_id = g.id UNION "
+        "                       SELECT checkpoint FROM scores WHERE group_id = g.id)) AS visits "
+        "FROM groups g LEFT JOIN scores s ON s.group_id = g.id "
         "GROUP BY g.id ORDER BY (COALESCE(SUM(s.quiz), 0) + COALESCE(SUM(s.practical), 0)) DESC, CAST(g.name AS INTEGER)"
-    ).fetchall()
-    return {cat: [r for r in rows if r["category"] == cat] for cat in CATEGORIES}
+    )]
+    by_cat = {cat: [r for r in rows if r["category"] == cat] for cat in CATEGORIES}
+    for cat_rows in by_cat.values():
+        for i, r in enumerate(cat_rows):
+            prev = cat_rows[i - 1] if i else None
+            same = prev and prev["quiz"] + prev["practical"] == r["quiz"] + r["practical"]
+            r["place"] = prev["place"] if same else i + 1
+    return by_cat
 
 
 @app.route("/export.xlsx")
@@ -1094,6 +1201,10 @@ def export_xlsx():
             cell.font = Font(bold=True)
         for r in rows:
             ws.append(list(r))
+            for cell in ws[ws.max_row]:
+                # Text like "=1+1" in a name or comment stays text, not an Excel formula.
+                if cell.data_type == "f":
+                    cell.data_type = "s"
         for col in ws.columns:
             ws.column_dimensions[col[0].column_letter].width = max(
                 8, min(40, max(len(str(c.value or "")) for c in col) + 2))
@@ -1102,9 +1213,9 @@ def export_xlsx():
     by_cat = ranking(db)
     sheet("Uitslag", ["Categorie", "Plaats", "Groep", "Wandelaars", "Quiz", "Praktijk", "Totaal",
                       "CP's", "Uitgevallen"],
-          [(cat.capitalize(), i, int(r["name"]), r["members"] or "", r["quiz"], r["practical"],
+          [(cat.capitalize(), r["place"], int(r["name"]), r["members"] or "", r["quiz"], r["practical"],
             r["quiz"] + r["practical"], r["visits"], "ja" if r["retired_at"] else "")
-           for cat, rows in by_cat.items() for i, r in enumerate(rows, 1)], first=True)
+           for cat, rows in by_cat.items() for r in rows], first=True)
     hikers = {}
     for h in db.execute("SELECT * FROM hikers ORDER BY id"):
         hikers.setdefault(h["group_id"], []).append(h)
@@ -1117,7 +1228,8 @@ def export_xlsx():
             gr["phone"], localtime(gr["retired_at"]) if gr["retired_at"] else "", gr["retired_cp"] or "")
            for gr in groups])
     visits = db.execute(
-        "SELECT g.name, g.category, c.checkpoint, c.checkin_at, c.checkout_at, s.quiz, s.practical "
+        # k.checkpoint, not c.checkpoint: a score at a CP without a check-in must not drop out.
+        "SELECT g.name, g.category, k.checkpoint, c.checkin_at, c.checkout_at, s.quiz, s.practical "
         "FROM groups g JOIN (SELECT group_id, checkpoint FROM checkins UNION "
         "                    SELECT group_id, checkpoint FROM scores) k ON k.group_id = g.id "
         "LEFT JOIN checkins c ON c.group_id = g.id AND c.checkpoint = k.checkpoint "
@@ -1128,7 +1240,8 @@ def export_xlsx():
           [(int(v["name"]), v["category"].capitalize(), v["checkpoint"], CHECKPOINTS.get(v["checkpoint"]),
             localtime(v["checkin_at"]) if v["checkin_at"] else "",
             localtime(v["checkout_at"]) if v["checkout_at"] else "",
-            minutes_between(v["checkin_at"], v["checkout_at"]) or "",
+            ("" if minutes_between(v["checkin_at"], v["checkout_at"]) is None
+             else minutes_between(v["checkin_at"], v["checkout_at"])),
             v["quiz"] or "", v["practical"] or "")
            for v in visits if v["checkpoint"] is not None])
     out = io.BytesIO()
@@ -1166,6 +1279,20 @@ def group_link(gid):
     return redirect(group_page_for(current_user(), gid))
 
 
+@app.route("/q/<int:number>")
+@login_required()
+def group_qr(number):
+    """Target of the QR code on a printed card: the group *number*, as printed on the card.
+
+    The internal id can be given out again after a group is deleted or all data is wiped,
+    so a card holding the id could open a different group.
+    """
+    found = get_db().execute("SELECT id FROM groups WHERE name = ?", (str(number),)).fetchone()
+    if found is None:
+        abort(404)
+    return redirect(group_page_for(current_user(), found["id"]))
+
+
 @app.route("/zoek")
 @login_required()
 def lookup():
@@ -1176,7 +1303,7 @@ def lookup():
     if q:
         flash(f"Groep {q} bestaat niet.", "error")
     back = request.args.get("back", "")
-    return redirect(back if back.startswith("/") and not back.startswith("//") else url_for("index"))
+    return redirect(back if is_local_path(back) else url_for("index"))
 
 
 @app.route("/groepen/kaarten")
@@ -1190,7 +1317,7 @@ def group_cards():
                          "ORDER BY category, CAST(name AS INTEGER)"):
         names = [h["name"] for h in db.execute(
             "SELECT name FROM hikers WHERE group_id = ? ORDER BY id", (gr["id"],))]
-        qr = segno.make(base + url_for("group_link", gid=gr["id"]), error="m")
+        qr = segno.make(base + url_for("group_qr", number=int(gr["name"])), error="m")
         cards.append({"group": gr, "names": names,
                       "qr": Markup(qr.svg_inline(scale=4, border=2, omitsize=True))})
     return render_template("cards.html", cards=cards, base=base)
@@ -1213,14 +1340,20 @@ def groups():
             flash("Kies een categorie.", "error")
         elif not people:
             flash("Vul minstens één naam in.", "error")
+        elif len(people) > MAX_HIKERS:
+            flash(f"Een groep heeft hoogstens {MAX_HIKERS} wandelaars.", "error")
         else:
             number = next_group_number(db, cat)
             if number is None:
                 lo, hi = CATEGORIES[cat]
                 flash(f"Alle nummers van {lo} tot {hi} zijn al in gebruik.", "error")
             else:
-                cur = db.execute("INSERT INTO groups (name, category, phone) VALUES (?, ?, ?)",
-                                 (str(number), cat, request.form.get("phone", "").strip()[:40]))
+                try:
+                    cur = db.execute("INSERT INTO groups (name, category, phone) VALUES (?, ?, ?)",
+                                     (str(number), cat, request.form.get("phone", "").strip()[:40]))
+                except sqlite3.IntegrityError:  # another admin took this number a moment ago
+                    flash("Dat groepsnummer werd net door iemand anders gebruikt. Probeer het opnieuw.", "error")
+                    return redirect(url_for("groups"))
                 db.executemany("INSERT INTO hikers (name, comment, group_id) VALUES (?, ?, ?)",
                                [(n, c, cur.lastrowid) for n, c in people])
                 db.commit()
@@ -1268,6 +1401,10 @@ def group_edit(gid):
                 db.commit()
                 audit(f"wandelaar {name} in groep {group['name']} gewijzigd")
                 flash("Wandelaar opgeslagen.", "ok")
+            elif group["retired_at"]:
+                flash("Groep is uitgevallen of samengevoegd. Maak de groep eerst weer actief.", "error")
+            elif db.execute("SELECT COUNT(*) FROM hikers WHERE group_id = ?", (gid,)).fetchone()[0] >= MAX_HIKERS:
+                flash(f"Een groep heeft hoogstens {MAX_HIKERS} wandelaars.", "error")
             else:
                 db.execute("INSERT INTO hikers (name, comment, group_id) VALUES (?, ?, ?)",
                            (name, comment, gid))
@@ -1285,7 +1422,7 @@ def group_edit(gid):
         elif op == "merge":
             target = db.execute("SELECT * FROM groups WHERE id = ? AND id != ? AND retired_at IS NULL",
                                 (form.get("target", ""), gid)).fetchone()
-            ids = [int(i) for i in form.getlist("hiker") if i.isdigit()]
+            ids = [int(i) for i in form.getlist("hiker") if i.isdecimal()]
             moving = db.execute(
                 f"SELECT * FROM hikers WHERE group_id = ? AND id IN ({','.join('?' * len(ids))})",
                 [gid] + ids).fetchall() if ids else []
@@ -1344,18 +1481,28 @@ def checkpoint_setup():
         counts = []
         for day in (1, 2):
             raw = request.form.get(f"day{day}", "")
-            counts.append(int(raw) if raw.isdigit() and 1 <= int(raw) <= MAX_PER_DAY else None)
+            counts.append(int(raw) if raw.isdecimal() and 1 <= int(raw) <= MAX_PER_DAY else None)
         if None in counts:
             flash(f"Kies per dag 1 tot {MAX_PER_DAY} checkpoints.", "error")
             return redirect(url_for("checkpoint_setup"))
         total = sum(counts)
-        used = sorted({r[0] for r in db.execute(
-            "SELECT checkpoint FROM checkins WHERE checkpoint > ? UNION "
-            "SELECT checkpoint FROM scores WHERE checkpoint > ? UNION "
-            "SELECT checkpoint FROM users WHERE checkpoint > ?", (total, total, total))})
-        if used:
-            flash("Dat kan niet: " + ", ".join(f"CP {c}" for c in used) + " heeft al in- of uitchecks, "
+        # Checkpoint numbers run on across both days, so a new count for day 1 shifts which
+        # day a number belongs to. A checkpoint that is in use must stay on the same day.
+        old_n1 = checkpoints_per_day()[0]
+        in_use = {r[0] for r in db.execute(
+            "SELECT checkpoint FROM checkins UNION SELECT checkpoint FROM scores UNION "
+            "SELECT checkpoint FROM score_requests UNION "
+            "SELECT checkpoint FROM users WHERE checkpoint IS NOT NULL")}
+        gone = sorted(c for c in in_use if c > total)
+        moved = sorted(c for c in in_use if c <= total and (c <= old_n1) != (c <= counts[0]))
+        if gone:
+            flash("Dat kan niet: " + ", ".join(f"CP {c}" for c in gone) + " heeft al in- of uitchecks, "
                   "scores of een checkpointpost. Haal die eerst weg.", "error")
+            return redirect(url_for("checkpoint_setup"))
+        if moved:
+            flash("Dat kan niet: " + ", ".join(f"CP {c}" for c in moved) + " zou naar een andere dag "
+                  "verschuiven, maar heeft al in- of uitchecks, scores of een checkpointpost. "
+                  "Pas alleen het aantal checkpoints van dag 2 aan, of haal die gegevens eerst weg.", "error")
             return redirect(url_for("checkpoint_setup"))
         for day, n in zip((1, 2), counts):
             set_setting(db, f"cp_day{day}", str(n))
@@ -1366,7 +1513,7 @@ def checkpoint_setup():
                 value = request.form.get(f"{field}_{cp}", "").strip()[:limit] if cp <= total else ""
                 set_setting(db, f"cp_{field}_{cp}", value or None)
             raw = request.form.get(f"leg_{cp}", "").strip() if cp < total else ""
-            set_setting(db, f"leg_{cp}", str(int(raw)) if raw.isdigit() and 0 < int(raw) <= 24 * 60 else None)
+            set_setting(db, f"leg_{cp}", str(int(raw)) if raw.isdecimal() and 0 < int(raw) <= 24 * 60 else None)
         db.execute("DELETE FROM checkpoint_locations WHERE checkpoint > ?", (total,))
         db.commit()
         audit(f"checkpoints ingesteld: dag 1 = {counts[0]}, dag 2 = {counts[1]}")
@@ -1387,7 +1534,7 @@ def map_view():
         if current_user()["role"] != "admin":
             abort(403)
         raw = request.form.get("cp", "")
-        cp = int(raw) if raw.isdigit() and int(raw) in CHECKPOINTS else None
+        cp = int(raw) if raw.isdecimal() and int(raw) in CHECKPOINTS else None
         if cp is None:
             abort(400)
         if request.form.get("op") == "remove":
@@ -1470,7 +1617,7 @@ def users():
                 abort(403)
             role = "admin"
         cp = form.get("checkpoint", "")
-        cp = int(cp) if cp.isdigit() and int(cp) in CHECKPOINTS else None
+        cp = int(cp) if cp.isdecimal() and int(cp) in CHECKPOINTS else None
         if role == "staff" and cp is None:
             flash("Een checkpointpost moet een checkpoint hebben.", "error")
         elif op == "create":
@@ -1482,17 +1629,19 @@ def users():
                 flash("Die gebruikersnaam bestaat al (hoofdletters tellen niet mee).", "error")
             else:
                 try:
-                    db.execute("INSERT INTO users (username, password_hash, role, checkpoint, is_super) "
-                               "VALUES (?, ?, ?, ?, ?)", (username, generate_password_hash(password),
-                                                          role, cp if role == "staff" else None,
-                                                          int(make_super)))
+                    # Kaart zien is off for a new account; only a superadmin turns it on later.
+                    db.execute("INSERT INTO users (username, password_hash, role, checkpoint, is_super, can_map) "
+                               "VALUES (?, ?, ?, ?, ?, 0)", (username, generate_password_hash(password),
+                                                             role, cp if role == "staff" else None,
+                                                             int(make_super)))
                     db.commit()
                     audit(f"gebruiker {username} aangemaakt als {'superadmin' if make_super else role}")
                     flash("Gebruiker aangemaakt.", "ok")
                 except sqlite3.IntegrityError:
                     flash("Die gebruikersnaam bestaat al.", "error")
         elif op == "update":
-            uid = int(form.get("user_id", 0))
+            raw = form.get("user_id", "")
+            uid = int(raw) if raw.isdecimal() else 0
             target = db.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
             if target and role in ROLES:
                 active = 1 if form.get("active") else 0
@@ -1528,7 +1677,8 @@ def audit_log():
     db = get_db()
     who = request.args.get("wie", "").strip()
     ip = request.args.get("ip", "").strip()
-    page = max(int(request.args.get("p", "1") or 1), 1)
+    raw = request.args.get("p", "1")
+    page = max(int(raw), 1) if raw.isdecimal() else 1
     per = 100
     conds, params = [], []
     if who:

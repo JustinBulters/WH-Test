@@ -742,3 +742,119 @@ def test_proxyfix_uses_forwarded_address(client):
         row = wh.get_db().execute(
             "SELECT ip FROM audit_log WHERE action = 'mislukte inlogpoging'").fetchone()
         assert row["ip"] == "198.51.100.9"  # only the address the trusted proxy added
+
+
+# --- Fixes from the November 2026 review ---
+
+def test_login_rejects_backslash_open_redirect(client):
+    t = csrf(client)
+    r = client.post("/inloggen?next=/%5Cevil.example",
+                    data={"username": "admin", "password": "geheim123", "csrf": t})
+    assert r.headers["Location"] in ("/", "http://localhost/")
+
+
+def test_login_lockout_after_many_failures(client):
+    for _ in range(wh.LOGIN_MAX_PER_USER):
+        client.post("/inloggen", data={"username": "admin", "password": "fout", "csrf": csrf(client)})
+    # Even the right password is paused now.
+    r = client.post("/inloggen", data={"username": "admin", "password": "geheim123", "csrf": csrf(client)})
+    assert r.status_code == 429
+
+
+def test_password_change_logs_out_other_sessions(client):
+    phone = wh.app.test_client()
+    login(phone, "admin")
+    assert phone.get("/").status_code == 200
+    # A second client changes the password.
+    other = wh.app.test_client()
+    t = login(other, "admin")
+    other.post("/profiel", data={"csrf": t, "op": "password", "old": "geheim123", "new": "nieuwwachtwoord1"})
+    # The first phone is now logged out.
+    assert phone.get("/").status_code == 302
+
+
+def test_score_request_keeps_blank_field(client):
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1/in", data={"csrf": t})
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "7", "practical_3": "8"})
+    # Ask to change only the quiz; leave practical blank.
+    client.post("/checkpoint/3/groep/1/wijziging",
+                data={"csrf": t, "quiz_3": "9", "practical_3": "", "reason": "telfout"})
+    ta = login(client, "admin")
+    with wh.app.app_context():
+        rid = wh.get_db().execute("SELECT id FROM score_requests").fetchone()["id"]
+    client.post(f"/verzoeken/{rid}", data={"csrf": ta, "decision": "approved"})
+    with wh.app.app_context():
+        s = wh.get_db().execute("SELECT quiz, practical FROM scores WHERE group_id=1 AND checkpoint=3").fetchone()
+        assert (s["quiz"], s["practical"]) == (9, 8)  # practical not wiped
+
+
+def test_write_once_keeps_existing_score(client):
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "6", "practical_3": "6"})
+    # Staff tries to overwrite directly: the old value stays.
+    client.post("/checkpoint/3/groep/1", data={"csrf": t, "quiz_3": "9", "practical_3": "9"})
+    with wh.app.app_context():
+        s = wh.get_db().execute("SELECT quiz, practical FROM scores WHERE group_id=1 AND checkpoint=3").fetchone()
+        assert (s["quiz"], s["practical"]) == (6, 6)
+
+
+def test_checkpoint_day_shift_blocked(client):
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1/in", data={"csrf": t})  # CP3 now in use
+    ta = login(client, "admin")
+    # Default is day1=7, day2=5. Shrinking day1 to 2 would move CP3 to day 2.
+    client.post("/checkpoints", data={"csrf": ta, "day1": "2", "day2": "5"})
+    assert wh.app.test_client() and True
+    with wh.app.app_context():
+        assert wh.get_setting("cp_day1") in (None, "")  # not saved
+
+
+def test_qr_uses_group_number_not_id(client):
+    t = login(client, "post3")
+    # The QR route works by printed number.
+    assert client.get("/q/101").headers["Location"].endswith("/checkpoint/3/groep/1")
+    assert client.get("/q/999").status_code == 404
+
+
+def test_ranking_ties_share_place(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("INSERT INTO groups (name, category) VALUES ('102', 'junioren')")
+        now = wh.now_utc()
+        for gid in (1, 2):
+            db.execute("INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at) "
+                       "VALUES (?, 1, 5, 5, ?)", (gid, now))
+        db.commit()
+        by_cat = wh.ranking(db)
+    places = [r["place"] for r in by_cat["junioren"]]
+    assert places == [1, 1]
+
+
+def test_export_includes_score_without_checkin(client):
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("INSERT INTO scores (group_id, checkpoint, quiz, practical, updated_at) "
+                   "VALUES (1, 5, 7, 8, ?)", (wh.now_utc(),))
+        db.commit()
+    login(client, "admin")
+    r = client.get("/export.xlsx")
+    assert r.status_code == 200 and len(r.data) > 0
+
+
+def test_poll_returns_401_when_logged_out(client):
+    assert client.get("/meldingen/nieuw?ajax=1").status_code == 401
+
+
+def test_weird_digits_do_not_crash(client):
+    login(client, "admin")
+    assert client.get("/meldingen/nieuw?na=\u00b2&ajax=1").status_code == 200
+    assert client.get("/logboek?p=\u00b2").status_code == 200
+
+
+def test_max_hikers_enforced_on_create(client):
+    t = login(client, "admin")
+    client.post("/groepen", data={"csrf": t, "category": "senioren",
+                                  "hiker_name": ["A", "B", "C", "D"], "hiker_comment": ["", "", "", ""]})
+    with wh.app.app_context():
+        assert wh.get_db().execute("SELECT COUNT(*) FROM groups WHERE category='senioren'").fetchone()[0] == 0

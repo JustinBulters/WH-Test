@@ -94,7 +94,7 @@
 {% endif %}
 
 <h2>Groep verwijderen</h2>
-<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="group_delete"><button class="danger">Groep {{ group.name }} met wandelaars verwijderen</button></form>
+<form method="post" onsubmit="return confirm('Groep {{ group.name }} en alle scores en in/uitchecks worden verwijderd. Dit kan niet ongedaan worden gemaakt. Doorgaan?')"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="op" value="group_delete"><button class="danger">Groep {{ group.name }} met wandelaars verwijderen</button></form>
 {% else %}
 <div class="panel"><ul class="people">
 {% for h in hikers %}<li>{{ h.name }}{% if h.comment %}<br><span class="note">{{ h.comment }}</span>{% endif %}</li>
