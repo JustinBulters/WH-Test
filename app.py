@@ -1,7 +1,7 @@
 """Hike checkpoint tracking website.
 
-Lightweight Flask + SQLite app with server-rendered pages and no JavaScript,
-so it stays usable on phones with poor signal. UI text is Dutch.
+Lightweight Flask + SQLite app with server-rendered pages and only a little plain
+JavaScript, so it stays usable on phones with poor signal. UI text is Dutch.
 """
 import hashlib
 import hmac
@@ -91,8 +91,8 @@ def _secret_key():
 
 app.secret_key = _secret_key()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
-                  # Behind HTTPS (Render sets RENDER; elsewhere set WH_HTTPS=1) only send the cookie over HTTPS.
-                  SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER") or os.environ.get("WH_HTTPS")),
+                  # Behind HTTPS (set WH_HTTPS=1) only send the cookie over HTTPS.
+                  SESSION_COOKIE_SECURE=bool(os.environ.get("WH_HTTPS")),
                   # A login ends after this long; covers the two hike days with room to spare.
                   PERMANENT_SESSION_LIFETIME=timedelta(days=4))
 
