@@ -8,7 +8,18 @@
  * a restart during an update, an expired login or a stuck connection keep it waiting.
  */
 (function () {
-  var KEY = 'wh-offline-queue', FAILED = 'wh-offline-failed';
+  // Each user has their own queue on this phone. When staff hand a phone over, the next
+  // person's login never sends (or loses) the previous person's waiting taps; those are
+  // sent when that person logs in again.
+  var box = document.getElementById('toasts'), uid = box && box.getAttribute('data-user');
+  if (!uid) return;
+  var KEY = 'wh-offline-queue-' + uid, FAILED = 'wh-offline-failed-' + uid;
+  try {  // taps saved by the old version (one shared queue) go to whoever logs in first
+    var old = localStorage.getItem('wh-offline-queue');
+    if (old) { localStorage.setItem(KEY, old); localStorage.removeItem('wh-offline-queue'); }
+    var oldFailed = localStorage.getItem('wh-offline-failed');
+    if (oldFailed) { localStorage.setItem(FAILED, oldFailed); localStorage.removeItem('wh-offline-failed'); }
+  } catch (e) {}
   var STAMP = /\/checkpoint\/\d+\/groep\/\d+\/(in|uit)$/;
   var TIMEOUT = 15000;  // ms; on a weak signal a request can hang without ever failing
   var sending = false, needLogin = false;
@@ -161,6 +172,14 @@
       }
       location.reload();
     }).catch(function () { queue(form, item); });
+  }, true);
+
+  // Logging out with taps still waiting: warn, they are only sent once this user logs in again.
+  document.addEventListener('submit', function (e) {
+    var action = e.target.getAttribute('action') || '';
+    if (!/\/uitloggen$/.test(action) || !load().length) return;
+    if (!confirm('Er wachten nog ' + load().length + ' tik(ken) op verbinding. Die worden pas verstuurd ' +
+                 'als jij weer inlogt op deze telefoon. Toch uitloggen?')) e.preventDefault();
   }, true);
 
   window.addEventListener('online', flush);
