@@ -13,6 +13,7 @@ import sqlite3
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import io
@@ -530,8 +531,18 @@ def login_required(*roles):
 
 
 def is_local_path(path):
-    """A link to a page on this site. Browsers read '\\' as '/', so '/\\evil.example' is not local."""
-    return path.startswith("/") and not path.startswith("//") and "\\" not in path
+    """A link to a page on this site.
+
+    Browsers read '\\' as '/', so '/\\evil.example' is not local. Browsers (and Werkzeug's
+    redirect) also drop tabs and newlines, so '/<tab>/evil.example' would become
+    '//evil.example': any control character or space makes a path not local.
+    """
+    if not path or "\\" in path or any(ord(ch) < 0x21 or ord(ch) == 0x7F for ch in path):
+        return False
+    if not path.startswith("/") or path.startswith("//"):
+        return False
+    parts = urlsplit(path)
+    return not parts.scheme and not parts.netloc
 
 
 def safe_back(default):
@@ -1230,8 +1241,14 @@ def checkpoint_stamp(cp, gid, action):
     raw_at = request.form.get("at", "")
     tapped = tap_time(raw_at)
     late_note = ""
+    if tapped and action == "in":
+        # A check-in cannot be earlier than leaving the previous checkpoint, or than the start of the hike.
+        floor = earliest_checkin(db, gid, cp)
+        if floor and tapped < floor:
+            late_note = f" (tiktijd {localtime(tapped, '%H:%M')} lag vóór het vorige vertrek, aangepast)"
+            tapped = floor
     if tapped and tapped < ts:
-        late_note = f" (offline getikt om {localtime(tapped, '%H:%M')}, later verstuurd)"
+        late_note = late_note or f" (offline getikt om {localtime(tapped, '%H:%M')}, later verstuurd)"
         ts = tapped
     elif raw_at and not tapped:
         # Too old (or the phone's clock is wrong): the time of sending is used. Say so in the log.
@@ -1281,6 +1298,24 @@ def checkpoint_stamp(cp, gid, action):
 
 # Offline taps older than this are not trusted; the server time is used instead.
 MAX_OFFLINE_HOURS = 12
+
+
+def earliest_checkin(db, gid, cp):
+    """The earliest believable check-in time for this group at this checkpoint (UTC ISO text).
+
+    Not before the group left an earlier checkpoint, and not before midnight (Dutch time) of the
+    hike's start date. None when there is no limit.
+    """
+    floors = []
+    prev = db.execute("SELECT MAX(checkout_at) FROM checkins WHERE group_id = ? AND checkpoint < ?",
+                      (gid, cp)).fetchone()[0]
+    if prev:
+        floors.append(prev)
+    sd = start_date()
+    if sd:
+        midnight = datetime(sd.year, sd.month, sd.day, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+        floors.append(midnight.isoformat(timespec="seconds"))
+    return max(floors) if floors else None
 
 
 def tap_time(raw):

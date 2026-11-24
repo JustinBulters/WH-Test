@@ -756,6 +756,64 @@ def test_login_rejects_backslash_open_redirect(client):
     assert r.headers["Location"] in ("/", "http://localhost/")
 
 
+@pytest.mark.parametrize("nxt", ["/%09/evil.example", "/%0D/evil.example", "/%0A/evil.example",
+                                 "//evil.example", "/%5Cevil.example", "https:evil.example", " /x"])
+def test_login_rejects_open_redirect_tricks(client, nxt):
+    t = csrf(client)
+    r = client.post(f"/inloggen?next={nxt}", data={"username": "admin", "password": "geheim123", "csrf": t})
+    assert r.status_code == 302 and r.headers["Location"] in ("/", "http://localhost/")
+
+
+def test_lookup_back_rejects_tab_redirect(client):
+    login(client, "admin")
+    r = client.get("/zoek?back=%2F%09%2Fevil.example")
+    assert "evil.example" not in r.headers.get("Location", "")
+
+
+def test_local_paths_still_allowed():
+    assert wh.is_local_path("/checkpoint/3?x=1")
+    assert wh.is_local_path("/groepen/1#hikers")
+    for bad in ("", "x", "//e.x", "/\\e.x", "/\t/e.x", "/\n/e.x", "/\x7f"):
+        assert not wh.is_local_path(bad)
+
+
+def test_offline_checkin_not_before_previous_checkout(client):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    with wh.app.app_context():
+        db = wh.get_db()
+        left = (now - timedelta(hours=1)).isoformat()
+        db.execute("INSERT INTO checkins (group_id, checkpoint, checkin_at, checkout_at) VALUES (1, 2, ?, ?)",
+                   ((now - timedelta(hours=2)).isoformat(), left))
+        db.commit()
+    t = login(client, "post3")
+    backdated = (now - timedelta(hours=5)).isoformat()
+    r = client.post("/checkpoint/3/groep/1/in", data={"csrf": t, "ajax": "1", "at": backdated})
+    assert r.get_json()["ok"]
+    with wh.app.app_context():
+        v = wh.get_db().execute("SELECT checkin_at FROM checkins WHERE checkpoint = 3").fetchone()
+    assert v["checkin_at"] == left
+    login(client, "admin")
+    assert "vóór het vorige vertrek" in client.get("/logboek").get_data(as_text=True)
+
+
+def test_offline_checkin_not_before_start_date(client):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    with wh.app.app_context():
+        db = wh.get_db()
+        db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('start_date', ?)",
+                   (datetime.now(wh.LOCAL_TZ).date().isoformat(),))
+        db.commit()
+        floor = wh.earliest_checkin(db, 1, 3)
+    t = login(client, "post3")
+    client.post("/checkpoint/3/groep/1/in",
+                data={"csrf": t, "ajax": "1", "at": (now - timedelta(hours=11, minutes=59)).isoformat()})
+    with wh.app.app_context():
+        v = wh.get_db().execute("SELECT checkin_at FROM checkins WHERE checkpoint = 3").fetchone()
+    assert v["checkin_at"] >= min(floor, now.isoformat())
+
+
 def test_login_lockout_after_many_failures(client):
     for _ in range(wh.LOGIN_MAX_PER_USER):
         client.post("/inloggen", data={"username": "admin", "password": "fout", "csrf": csrf(client)})

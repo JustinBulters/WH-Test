@@ -5,7 +5,7 @@
  * logged-in user, which must not be shown to the next person on a shared phone when offline.
  * The cache is emptied on logout.
  */
-var CACHE = 'wh-v2';
+var CACHE = 'wh-v3';
 var ASSETS = ['/static/style.css', '/static/offline.js', '/static/notify.js'];
 
 self.addEventListener('install', function (e) {

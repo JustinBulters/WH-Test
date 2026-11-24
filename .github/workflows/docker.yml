@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only by default; only the publish job below may push images.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
